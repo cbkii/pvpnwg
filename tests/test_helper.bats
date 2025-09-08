@@ -62,7 +62,16 @@ EOF
 # Create a Secure-Core config for testing
 create_test_sc_config() {
     local name="${1:-secure-core-test}"
-    create_test_config "${name}88" "${2:-sc.example.com}" "${3:-51820}"
+    create_test_config "${name}SC" "${2:-sc.example.com}" "${3:-51820}"
+}
+
+create_test_pf_config() {
+    local name="${1:-pf-test}"
+    create_test_config "$name" "${2:-pf.example.com}" "${3:-51820}"
+    cat >> "$CONFIG_DIR/${name}.conf" <<'EOF'
+# Moderate NAT = off
+# NAT-PMP (Port Forwarding) = on
+EOF
 }
 
 # Mock external commands for testing

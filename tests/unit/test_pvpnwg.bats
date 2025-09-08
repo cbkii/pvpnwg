@@ -101,12 +101,12 @@ EOF
 # ===========================
 
 @test "is_secure_core_name detects SC configs" {
-    run is_secure_core_name "US-TX-88.conf"
+    run is_secure_core_name "US-TXSC.conf"
     [ "$status" -eq 0 ]
-    
-    run is_secure_core_name "CH-SC-1.conf"  
+
+    run is_secure_core_name "CH-SC-1.conf"
     [ "$status" -eq 0 ]
-    
+
     run is_secure_core_name "secure-core-nl.conf"
     [ "$status" -eq 0 ]
 }
@@ -117,6 +117,46 @@ EOF
     
     run is_secure_core_name "NL-FREE-1.conf"
     [ "$status" -eq 1 ]
+}
+
+# ===========================
+# Port Forwarding detection tests
+# ===========================
+
+@test "is_pf_name detects PF configs" {
+    run is_pf_name "US-TXPF.conf"
+    [ "$status" -eq 0 ]
+
+    run is_pf_name "port-forward-de.conf"
+    [ "$status" -eq 0 ]
+}
+
+@test "is_pf_name rejects non-PF configs" {
+    run is_pf_name "US-TX-1.conf"
+    [ "$status" -eq 1 ]
+}
+
+@test "cmd_rename_pf tags configs" {
+    create_test_pf_config "pfexample"
+    run cmd_rename_pf
+    [ "$status" -eq 0 ]
+    [ -f "$CONFIG_DIR/pfexamplePF.conf" ]
+}
+
+@test "select_conf handles P2P + PF configs" {
+    create_test_pf_config "mixP2P"
+    run cmd_rename_pf
+    [ -f "$CONFIG_DIR/mixP2PPF.conf" ]
+
+    function ping() {
+        echo "PING 1.2.3.4: 56 data bytes"
+        echo "64 bytes from 1.2.3.4: time=50.0 ms"
+    }
+    export -f ping
+
+    run select_conf "pf"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"mixP2PPF.conf|50"* ]]
 }
 
 # ===========================
