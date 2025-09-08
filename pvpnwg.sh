@@ -49,7 +49,12 @@ QBIT_HEALTH_DEFAULT=true
 # ===========================
 PHOME="${PVPN_PHOME:-${PHOME_DEFAULT}}"
 CONF_FILE="${PHOME}/pvpnwg.conf"
-[[ -f "$CONF_FILE" ]] && . "$CONF_FILE"  # shellcheck disable=SC1090
+CONF_WARN_PERMS=""
+if [[ -f "$CONF_FILE" ]]; then
+  conf_perms=$(stat -c '%a' "$CONF_FILE" 2>/dev/null || echo "")
+  [[ "$conf_perms" != "600" ]] && CONF_WARN_PERMS="$conf_perms"
+  . "$CONF_FILE"  # shellcheck disable=SC1090
+fi
 
 CONFIG_DIR="${CONFIG_DIR:-${CONFIG_DIR_DEFAULT}}"
 IFACE="${IFACE:-${IFACE_DEFAULT}}"
@@ -122,6 +127,9 @@ check_deps(){
   fi
   sudo -n true 2>/dev/null || die "Passwordless sudo required (NOPASSWD)."
 }
+
+# Warn if config permissions are too permissive
+[[ -n "${CONF_WARN_PERMS}" ]] && log "WARN: $CONF_FILE permissions are ${CONF_WARN_PERMS}; expected 600"
 
 # ===========================
 # DNS & routing state
@@ -715,6 +723,7 @@ DNS_HEALTH=${DNS_HEALTH}
 DNS_LAT_MS=$DNS_LAT_MS
 QBIT_HEALTH=${QBIT_HEALTH}
 EOF
+  chmod 600 "$CONF_FILE"
   log "Wrote $CONF_FILE"
   if [[ "${1:-}" == "--qb" || "${1:-}" == "--all" ]]; then qb_login || true; qb_set_port "${PF_STATIC_FALLBACK_PORT}" || true; fi
   echo "Init complete. Edit $CONF_FILE as needed."
@@ -742,7 +751,8 @@ Commands:
   reset                                            Hard reset
   init [--qb|--all]                                First-run config writer
   monitor                                          Enhanced monitor loop
-EOF }
+EOF
+}
 
 parse_globals(){ local args=(); while [[ $# -gt 0 ]]; do case "$1" in -v|--verbose) VERBOSE=1; shift;; --dry-run) DRY_RUN=1; shift;; --) shift; break;; *) args+=("$1"); shift;; esac; done; printf '%s\n' "${args[@]}"; }
 
