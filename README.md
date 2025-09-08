@@ -41,8 +41,8 @@ A **single-file, Bash-only CLI** for managing ProtonVPN WireGuard connections wi
 ### Quick Install
 ```bash
 # Clone or download the project
-git clone <repository-url>
-cd pvpnwg-cli
+git clone https://github.com/cbkii/pvpnwg
+cd pvpnwg
 
 # Install (requires root)
 sudo ./install.sh
@@ -116,7 +116,7 @@ sudo pvpnwg rename-sc
 Edit `~/.pvpnwg/pvpnwg.conf`:
 
 ```bash
-# Paths
+# PATHS # Explicitly hardcode your $USER
 PHOME="/home/username/.pvpnwg"
 CONFIG_DIR="/home/username/.pvpnwg/configs"
 
@@ -554,8 +554,8 @@ rm -rf ~/.pvpnwg
 ### Development Setup
 ```bash
 # Clone repository
-git clone <repository-url>
-cd pvpnwg-cli
+git clone https://github.com/cbkii/pvpnwg
+cd pvpnwg
 
 # Set up test environment
 sudo bats tests/unit/test_pvpnwg.bats
