@@ -3,8 +3,7 @@
 # ----------------------------------------------------------------------------------
 # Gluetun-style PF sync: stable NAT-PMP renew loop that keeps qB's listen_port in
 # sync with the CURRENT public mapping, never clobbers it on transient failures,
-# and uses opinionated Proton defaults (DNS 10.2.0.1; WG subnet 10.2.0.0/16 with
-# gw fallback 10.2.0.1). Everything remains single-file, Bash-only.
+# and uses Proton defaults (WG subnet 10.2.0.0/16 with NAT-PMP gateway 10.2.0.1).
 # ----------------------------------------------------------------------------------
 # Enhanced Features:
 #  • WG health recovery (handshake age, link state, endpoint latency)
@@ -36,7 +35,6 @@ WEBUI_URL_DEFAULT="http://192.168.1.50:8080"
 WEBUI_USER_DEFAULT="admin"
 WEBUI_PASS_DEFAULT="change_me"
 QB_CONF_PATH_DEFAULT="${RUN_HOME}/.config/qBittorrent/qBittorrent.conf"
-PF_GATEWAY_FALLBACK_DEFAULT="10.2.0.1"
 PF_RENEW_SECS_DEFAULT=45
 PF_STATIC_FALLBACK_PORT_DEFAULT=51820
 PF_PROTO_LIST_DEFAULT=("udp" "tcp")
@@ -73,9 +71,9 @@ WEBUI_URL="${WEBUI_URL:-${WEBUI_URL_DEFAULT}}"
 WEBUI_USER="${WEBUI_USER:-${WEBUI_USER_DEFAULT}}"
 WEBUI_PASS="${WEBUI_PASS:-${WEBUI_PASS_DEFAULT}}"
 QB_CONF_PATH="${QB_CONF_PATH:-${QB_CONF_PATH_DEFAULT}}"
-PF_GATEWAY_FALLBACK="${PF_GATEWAY_FALLBACK:-${PF_GATEWAY_FALLBACK_DEFAULT}}"
 PF_RENEW_SECS="${PF_RENEW_SECS:-${PF_RENEW_SECS_DEFAULT}}"
 PF_STATIC_FALLBACK_PORT="${PF_STATIC_FALLBACK_PORT:-${PF_STATIC_FALLBACK_PORT_DEFAULT}}"
+PF_GATEWAY="10.2.0.1"
 KILLSWITCH_DEFAULT="${KILLSWITCH_DEFAULT:-${KILLSWITCH_DEFAULT_DEFAULT}}"
 LOG_JSON="${LOG_JSON:-${LOG_JSON_DEFAULT}}"
 LATENCY_THRESHOLD_MS="${LATENCY_THRESHOLD_MS:-${LATENCY_THRESHOLD_MS_DEFAULT}}"
@@ -100,11 +98,12 @@ TMP_DIR="${PHOME}/tmp"
 LOG_FILE="${PHOME}/pvpn.log"
 TIME_FILE="${STATE_DIR}/last_connect_epoch.txt"
 PORT_FILE="${STATE_DIR}/mapped_port.txt"
+PROTON_FWD_FILE="/run/user/${RUN_UID}/Proton/VPN/forwarded_port"
+GLUETUN_FWD_FILE="/tmp/gluetun/forwarded_port"
 DNS_BACKUP="${STATE_DIR}/dns_backup.tar"
 GW_STATE="${STATE_DIR}/gw_state.txt"
 IFCONF_FILE="${STATE_DIR}/lan_if.txt"
 COOKIE_JAR="${STATE_DIR}/qb_cookie.txt"
-PF_GW_CACHE="${STATE_DIR}/pf_gateway.txt"
 MON_FAILS_FILE="${STATE_DIR}/monitor_fail_count.txt"
 PF_HISTORY="${STATE_DIR}/pf_history.tsv" # ts\tprivate\tpublic\tgw\tstatus
 PF_JITTER_FILE="${STATE_DIR}/pf_jitter_count.txt"
@@ -150,8 +149,8 @@ _run() {
 need_root() { [[ ${EUID} -eq 0 ]] || die "Run as root (sudo)."; }
 
 check_deps() {
-  local -a req=(ip wg wg-quick curl jq awk sed grep ping)
-  local -a opt=(natpmpc vnstat nft resolvconf dig drill iptables)
+  local -a req=(ip wg wg-quick curl jq awk sed grep ping natpmpc)
+  local -a opt=(vnstat nft resolvconf dig drill iptables)
   local miss=0
   for b in "${req[@]}"; do command -v "$b" >/dev/null 2>&1 || {
     log "Missing required tool: $b"
@@ -159,8 +158,10 @@ check_deps() {
   }; done
   [[ $miss -eq 1 ]] && die "Install missing required tools and try again."
   for b in "${opt[@]}"; do command -v "$b" >/dev/null 2>&1 || vlog "Optional tool not found (OK): $b"; done
-  if command -v natpmpc >/dev/null 2>&1; then
-    if ! natpmpc -v 2>&1 | grep -Eq '([0-9]{4}-[0-9]{2}-[0-9]{2})'; then log "WARN: natpmpc version unknown/old; PF may be flaky (non-blocking)"; fi
+  local npv
+  npv=$(natpmpc -v 2>&1 | grep -oE '[0-9]{8}' | head -1 || echo "")
+  if [[ -z "$npv" || "$npv" -lt 20230423 ]]; then
+    die "natpmpc >=20230423 required (found ${npv:-unknown})"
   fi
 }
 
@@ -221,7 +222,7 @@ dns_dedupe() {
 }
 
 dns_latency_test() {
-  local resolver="${1:-10.2.0.1}" target="${2:-google.com}"
+  local resolver="${1:-$(wg_conf_dns | awk '{print $1}' | head -1)}" target="${2:-google.com}"
   if ! command -v dig >/dev/null 2>&1; then
     vlog "dig not available for DNS latency test"
     return 1
@@ -255,9 +256,18 @@ cmd_dns() {
     set)
       case "${2:-}" in
         proton)
-          printf '%s\n' "nameserver 10.2.0.1" >"$TMP_DIR/resolv.conf.new"
-        _run cp -f "$TMP_DIR/resolv.conf.new" /etc/resolv.conf
-          log "DNS set to Proton (10.2.0.1)"
+          local dns_servers
+          dns_servers=$(wg_conf_dns)
+          if [[ -z "$dns_servers" ]]; then
+            log "WARN: no DNS entries in $TARGET_CONF"
+            return 1
+          fi
+          : >"$TMP_DIR/resolv.conf.new"
+          for d in $dns_servers; do
+            printf 'nameserver %s\n' "$d" >>"$TMP_DIR/resolv.conf.new"
+          done
+          _run cp -f "$TMP_DIR/resolv.conf.new" /etc/resolv.conf
+          log "DNS set to Proton (${dns_servers})"
           ;;
         system)
           dns_restore || true
@@ -278,7 +288,7 @@ cmd_dns() {
       ;;
     latency)
       local ms
-      ms=$(dns_latency_test "${2:-10.2.0.1}" "${3:-google.com}" || echo "")
+      ms=$(dns_latency_test "${2:-}" "${3:-google.com}" || echo "")
       if [[ -n "$ms" ]]; then echo "DNS latency: ${ms}ms"; else echo "DNS latency: unavailable"; fi
       ;;
     *)
@@ -373,10 +383,12 @@ conf_validate() {
     vlog "WARN: AllowedIPs doesn't contain 0.0.0.0/0 in $file"
   fi
 
-  # Test wg-quick parsing
-  if ! wg-quick strip "$file" >/dev/null 2>&1; then
-    echo "wg-quick parse failed"
-    ((errors++))
+  # Test wg-quick parsing if available
+  if command -v wg-quick >/dev/null 2>&1; then
+    if ! wg-quick strip "$file" >/dev/null 2>&1; then
+      echo "wg-quick parse failed"
+      ((errors++))
+    fi
   fi
 
   if [[ $errors -eq 0 ]]; then
@@ -494,6 +506,10 @@ wg_handshake_age() {
 
 wg_endpoint_host() {
   wg show "$IFACE" endpoints 2>/dev/null | awk '{print $2}' | awk -F':' '{print $1; exit}'
+}
+
+wg_conf_dns() {
+  awk -F'=' '/^\s*DNS\s*=/{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}' "$TARGET_CONF" 2>/dev/null
 }
 
 wg_link_state() {
@@ -661,29 +677,7 @@ PF_BACKOFF_START=5
 PF_BACKOFF_MAX=60
 
 pf_detect_gateway() {
-  if [[ -s "$PF_GW_CACHE" ]]; then
-    cat "$PF_GW_CACHE"
-    return 0
-  fi
-  local gw=""
-  local ipcidr
-  ipcidr=$(ip -4 addr show dev "$IFACE" | awk '/inet /{print $2; exit}')
-  if [[ -n "$ipcidr" ]]; then
-    local ip="${ipcidr%/*}"
-    local a b c d
-    IFS='.' read -r a b c d <<<"$ip"
-    [[ -n "$a" && -n "$b" && -n "$c" ]] && gw="${a}.${b}.${c}.1"
-  fi
-  [[ -z "$gw" ]] && gw=$(ip route show default 0.0.0.0/0 dev "$IFACE" 2>/dev/null | awk '/default via/{print $3; exit}' || true)
-  [[ -z "$gw" ]] && gw=$(ip route get 1.1.1.1 oif "$IFACE" 2>/dev/null | awk '/via/{print $3; exit}' || true)
-  [[ -z "$gw" ]] && gw="$PF_GATEWAY_FALLBACK"
-  echo "$gw" | tee "$PF_GW_CACHE"
-}
-
-_pf_private_port() {
-  local qp
-  qp=$(qb_get_port 2>/dev/null || true)
-  [[ -n "$qp" && "$qp" != null ]] && echo "$qp" || echo "$PF_STATIC_FALLBACK_PORT"
+  echo "$PF_GATEWAY"
 }
 
 pf_parse_status() {
@@ -727,58 +721,55 @@ pf_check_jitter() {
 }
 
 pf_request_once() {
-  local private gw lease ok saw_try_again got_public prev
-  private="$(_pf_private_port)"
+  local gw lease prev out_udp out_tcp st_udp st_tcp port_udp port_tcp new_port saw_try_again=false
   gw="$(pf_detect_gateway)"
   lease=60
-  ok=false
-  saw_try_again=false
-  got_public=""
   prev="$(cat "$PORT_FILE" 2>/dev/null || true)"
-  for proto in "${PF_PROTO_LIST[@]}"; do
-    local out rc st
-    if ! out=$(timeout 5 natpmpc -g "$gw" -a "$private" 0 "$proto" "$lease" 2>&1); then
-      rc=$?
-    else
-      rc=0
+
+  if [[ -n "$prev" ]]; then
+    out_udp=$(natpmpc -g "$gw" -a "$prev" "$prev" udp "$lease" 2>&1 || true)
+    out_tcp=$(natpmpc -g "$gw" -a "$prev" "$prev" tcp "$lease" 2>&1 || true)
+  else
+    out_udp=$(natpmpc -g "$gw" -a 1 0 udp "$lease" 2>&1 || true)
+    out_tcp=$(natpmpc -g "$gw" -a 1 0 tcp "$lease" 2>&1 || true)
+  fi
+
+  st_udp=$(pf_parse_status "$out_udp")
+  st_tcp=$(pf_parse_status "$out_tcp")
+  vlog "natpmpc(udp gw=$gw) => ${out_udp//$'\n'/ }"
+  vlog "natpmpc(tcp gw=$gw) => ${out_tcp//$'\n'/ }"
+
+  if [[ "$st_udp" == mapped && "$st_tcp" == mapped ]]; then
+    port_udp=$(echo "$out_udp" | awk '/Mapped public port/{print $4; exit}')
+    port_tcp=$(echo "$out_tcp" | awk '/Mapped public port/{print $4; exit}')
+    if [[ -n "$port_udp" && "$port_udp" == "$port_tcp" ]]; then
+      new_port="$port_udp"
     fi
-    if [[ $rc -eq 124 ]]; then
-      vlog "natpmpc($proto gw=$gw) => timeout"
-      st="timeout"
-    else
-      vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
-      st=$(pf_parse_status "$out")
-    fi
-    case "$st" in
-      mapped)
-        local p
-        p=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
-        [[ -n "$p" && "$p" != 0 ]] && got_public="$p" && ok=true
-        ;;
-      try_again) saw_try_again=true ;;
-      *) : ;;
-    esac
-  done
-  if $ok; then
-    # Check for jitter and apply stability logic
-    if pf_check_jitter "$got_public" "$prev"; then
-      echo 0 >"$PF_JITTER_FILE" # Reset jitter counter on stable mapping
+  fi
+
+  if [[ -n "${new_port:-}" ]]; then
+    if pf_check_jitter "$new_port" "$prev"; then
+      echo 0 >"$PF_JITTER_FILE"
     fi
 
-    if [[ "$got_public" != "$prev" ]]; then
-      if qb_set_port "$got_public"; then
-        echo "$got_public" >"$PORT_FILE"
-        log "PF mapped: public=$got_public private=$private gw=$gw (updated)"
+    if [[ "$new_port" != "$prev" ]]; then
+      if qb_set_port "$new_port"; then
+        echo "$new_port" >"$PORT_FILE"
+        mkdir -p "$(dirname "$PROTON_FWD_FILE")" /tmp/gluetun
+        echo "$new_port" >"$PROTON_FWD_FILE"
+        echo "$new_port" >"$GLUETUN_FWD_FILE"
+        log "PF mapped: port=$new_port gw=$gw (updated)"
       else
-        log "WARN: qB sync to PF public $got_public failed"
+        log "WARN: qB sync to PF port $new_port failed"
       fi
     else
-      log "PF mapped unchanged: public=$got_public (kept)"
+      log "PF mapped unchanged: port=$new_port"
     fi
-    pf_record "$private" "$got_public" "$gw" ok
+    pf_record "$new_port" "$new_port" "$gw" ok
     return 0
   else
-    pf_record "$private" 0 "$gw" "$([[ $saw_try_again == true ]] && echo try_again || echo error)"
+    [[ "$st_udp" == try_again || "$st_tcp" == try_again ]] && saw_try_again=true
+    pf_record "${prev:-0}" 0 "$gw" "$($saw_try_again && echo try_again || echo error)"
     if $saw_try_again; then log "WARN: NAT-PMP TRY AGAIN on $gw (server may not support PF)"; else log "WARN: NAT-PMP failed on $gw"; fi
     if [[ -z "$prev" ]]; then
       log "No previous PF port; setting static fallback $PF_STATIC_FALLBACK_PORT"
@@ -792,23 +783,25 @@ pf_request_once() {
 }
 
 pf_verify() {
-  local private gw out st
-  private="$(_pf_private_port)"
+  local port gw out st
+  port="$(cat "$PORT_FILE" 2>/dev/null || echo "$PF_STATIC_FALLBACK_PORT")"
   gw="$(pf_detect_gateway)"
-  out=$(natpmpc -g "$gw" -a "$private" 0 udp 30 2>&1 || true)
+  out=$(natpmpc -g "$gw" -a "$port" "$port" udp 30 2>&1 || true)
   st=$(pf_parse_status "$out")
   case "$st" in mapped) echo "PF OK on $gw (udp)" ;; try_again) echo "PF TRY AGAIN on $gw (likely unsupported)" ;; *) echo "PF FAILED on $gw" ;; esac
 }
 
 pf_diag() {
+  local port
+  port="$(cat "$PORT_FILE" 2>/dev/null || echo "$PF_STATIC_FALLBACK_PORT")"
   echo "Gateway: $(pf_detect_gateway)"
-  echo "Private: $(_pf_private_port)"
+  echo "Port: $port"
   echo "Jitter count: $(cat "$PF_JITTER_FILE" 2>/dev/null || echo 0)"
   echo "History (tail):"
   tail -n 10 "$PF_HISTORY" 2>/dev/null || echo "(no history)"
   echo
   echo "natpmpc probe:"
-  natpmpc -g "$(pf_detect_gateway)" -a "$(_pf_private_port)" 0 udp 30 2>&1 || true
+  natpmpc -g "$(pf_detect_gateway)" -a "$port" "$port" udp 30 2>&1 || true
 }
 
 pf_loop() {
@@ -1063,9 +1056,10 @@ cmd_diag() {
       echo
       if [[ "$DNS_HEALTH" == "true" ]]; then
         echo "DNS latency tests:"
-        local ms
-        ms=$(dns_latency_test "10.2.0.1" "google.com" 2>/dev/null || echo "failed")
-        echo "  Proton (10.2.0.1): ${ms}ms"
+        local ms resolver
+        resolver=$(wg_conf_dns | awk '{print $1}' | head -1)
+        ms=$(dns_latency_test "$resolver" "google.com" 2>/dev/null || echo "failed")
+        echo "  Proton (${resolver:-unset}): ${ms}ms"
         ms=$(dns_latency_test "8.8.8.8" "google.com" 2>/dev/null || echo "failed")
         echo "  Google (8.8.8.8): ${ms}ms"
       fi
@@ -1372,7 +1366,6 @@ WEBUI_URL="$WEBUI_URL"
 WEBUI_USER="$WEBUI_USER"
 WEBUI_PASS="$WEBUI_PASS"
 QB_CONF_PATH="$QB_CONF_PATH"
-PF_GATEWAY_FALLBACK="$PF_GATEWAY_FALLBACK"
 PF_RENEW_SECS=$PF_RENEW_SECS
 PF_STATIC_FALLBACK_PORT=$PF_STATIC_FALLBACK_PORT
 LOG_JSON=${LOG_JSON}

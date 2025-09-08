@@ -218,22 +218,29 @@ EOF
 create_mock_natpmpc() {
     cat > "$TEST_TMPDIR/natpmpc" <<'EOF'
 #!/bin/bash
-# Mock natpmpc for testing
-
-case "$*" in
-    *"-g"*"10.2.0.1"*"51820"*"udp"*)
-        echo "Mapped public port 12345 to local port 51820 using UDP"
+case "$1" in
+    -v)
+        echo "natpmpc 20230423"
         exit 0
         ;;
-    *"-g"*"192.168.1.1"*"51820"*"udp"*)
-        echo "External IP not found, try again later"
-        exit 1
-        ;;
-    *)
-        echo "Connection failed: timeout"
-        exit 1
-        ;;
 esac
+while [[ "$1" ]]; do
+  case "$1" in
+    -g) gateway="$2"; shift 2 ;;
+    -a) int="$2"; ext="$3"; proto="$4"; shift 4 ;;
+    *) shift ;;
+  esac
+done
+if [[ "$gateway" == "10.2.0.1" ]]; then
+  echo "Mapped public port 12345 to local port ${int} using ${proto^^}"
+  exit 0
+elif [[ "$gateway" == "192.168.1.1" ]]; then
+  echo "External IP not found, try again later"
+  exit 1
+else
+  echo "Connection failed: timeout"
+  exit 1
+fi
 EOF
     chmod +x "$TEST_TMPDIR/natpmpc"
     export PATH="$TEST_TMPDIR:$PATH"
@@ -266,14 +273,10 @@ EOF
 
 @test "pf_request_once with successful mapping" {
     create_mock_natpmpc
-    export PF_GATEWAY_FALLBACK="10.2.0.1"
-    echo "51820" > "$STATE_DIR/mapped_port.txt"
-    
-    # Mock qb_get_port to return 51820
-    function qb_get_port() { echo "51820"; }
+
     function qb_set_port() { echo "qB set to $1"; }
-    export -f qb_get_port qb_set_port
-    
+    export -f qb_set_port
+
     run pf_request_once
     [ "$status" -eq 0 ]
     [[ "$(cat "$STATE_DIR/mapped_port.txt")" == "12345" ]]
