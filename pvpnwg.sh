@@ -18,10 +18,16 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # ===========================
-# Defaults
+# Defaults (derive from invoking user)
 # ===========================
-PHOME_DEFAULT="/home/pipi/.pvpnwg"
-CONFIG_DIR_DEFAULT="/home/pipi/.pvpnwg/configs"
+RUN_USER="${SUDO_USER:-$(id -un 2>/dev/null || echo root)}"
+RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+RUN_HOME="${RUN_HOME:-$HOME}"
+RUN_UID="$(id -u "$RUN_USER" 2>/dev/null || echo 0)"
+RUN_GID="$(id -g "$RUN_USER" 2>/dev/null || echo 0)"
+
+PHOME_DEFAULT="${RUN_HOME}/.pvpnwg"
+CONFIG_DIR_DEFAULT="${PHOME_DEFAULT}/configs"
 IFACE_DEFAULT="pvpnwg0"
 LAN_IF_DEFAULT="eth0"
 TIME_LIMIT_SECS_DEFAULT=$((8 * 3600))
@@ -29,7 +35,7 @@ DL_THRESHOLD_KBPS_DEFAULT=33
 WEBUI_URL_DEFAULT="http://192.168.1.50:8080"
 WEBUI_USER_DEFAULT="admin"
 WEBUI_PASS_DEFAULT="change_me"
-QB_CONF_PATH_DEFAULT="/home/pipi/.config/qBittorrent/qBittorrent.conf"
+QB_CONF_PATH_DEFAULT="${RUN_HOME}/.config/qBittorrent/qBittorrent.conf"
 PF_GATEWAY_FALLBACK_DEFAULT="10.2.0.1"
 PF_RENEW_SECS_DEFAULT=45
 PF_STATIC_FALLBACK_PORT_DEFAULT=51820
@@ -48,7 +54,7 @@ LOG_MAX_BYTES_DEFAULT=$((1024 * 1024))
 # ===========================
 # Config / Env
 # ===========================
-PHOME="${PVPN_PHOME:-${PHOME_DEFAULT}}"
+PHOME="${PHOME:-${PVPN_PHOME:-${PHOME_DEFAULT}}}"
 CONF_FILE="${PHOME}/pvpnwg.conf"
 CONF_WARN_PERMS=""
 if [[ -f "$CONF_FILE" ]]; then
@@ -105,6 +111,7 @@ PF_JITTER_FILE="${STATE_DIR}/pf_jitter_count.txt"
 HANDSHAKE_FILE="${STATE_DIR}/last_handshake.txt"
 
 mkdir -p "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
+chown "${RUN_UID}:${RUN_GID}" "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}" 2>/dev/null || true
 
 # ===========================
 # Logging helpers
@@ -140,7 +147,7 @@ _run() {
   if [[ $VERBOSE -eq 1 || $DRY_RUN -eq 1 ]]; then log "+" "$@"; fi
   [[ $DRY_RUN -eq 1 ]] || "$@"
 }
-need_root() { [[ ${EUID} -eq 0 ]] || die "Run as root (sudo). Passwordless sudo required."; }
+need_root() { [[ ${EUID} -eq 0 ]] || die "Run as root (sudo)."; }
 
 check_deps() {
   local -a req=(ip wg wg-quick curl jq awk sed grep ping)
@@ -155,7 +162,6 @@ check_deps() {
   if command -v natpmpc >/dev/null 2>&1; then
     if ! natpmpc -v 2>&1 | grep -Eq '([0-9]{4}-[0-9]{2}-[0-9]{2})'; then log "WARN: natpmpc version unknown/old; PF may be flaky (non-blocking)"; fi
   fi
-  sudo -n true 2>/dev/null || die "Passwordless sudo required (NOPASSWD)."
 }
 
 # Warn if config permissions are too permissive
@@ -1360,6 +1366,7 @@ DNS_LAT_MS=$DNS_LAT_MS
 QBIT_HEALTH=${QBIT_HEALTH}
 EOF
   chmod 600 "$CONF_FILE"
+  chown "${RUN_UID}:${RUN_GID}" "$CONF_FILE" 2>/dev/null || true
   log "Wrote $CONF_FILE"
   if [[ "${1:-}" == "--qb" || "${1:-}" == "--all" ]]; then
     qb_login || true
@@ -1417,13 +1424,15 @@ parse_globals() {
 }
 
 main() {
-  need_root
-  check_deps
-  iface_load
-  detect_dns_backend
   mapfile -t rest < <(parse_globals "$@")
   local cmd="${rest[0]:-}"
   rest=("${rest[@]:1}")
+  if [[ "$cmd" != "init" ]]; then
+    need_root
+    check_deps
+    iface_load
+    detect_dns_backend
+  fi
   case "$cmd" in
     connect | c) cmd_connect "${rest[@]:-}" ;;
     reconnect | r) cmd_reconnect "${rest[@]:-}" ;;
