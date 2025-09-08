@@ -20,7 +20,6 @@ setup_test_env() {
     export GW_STATE="$STATE_DIR/gw_state.txt"
     export IFCONF_FILE="$STATE_DIR/lan_if.txt"
     export COOKIE_JAR="$STATE_DIR/qb_cookie.txt"
-    export PF_GW_CACHE="$STATE_DIR/pf_gateway.txt"
     export MON_FAILS_FILE="$STATE_DIR/monitor_fail_count.txt"
     
     # Test mode settings
@@ -31,7 +30,6 @@ setup_test_env() {
     export WEBUI_URL="http://127.0.0.1:8080"
     export WEBUI_USER="test"
     export WEBUI_PASS="test"
-    export PF_GATEWAY_FALLBACK="10.2.0.1"
     export PF_STATIC_FALLBACK_PORT=51820
     export LOG_JSON=false
     
