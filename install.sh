@@ -5,7 +5,8 @@ set -euo pipefail
 INSTALL_DIR="/usr/local/bin"
 SYSTEMD_DIR="/etc/systemd/system"
 BIN_NAME="pvpnwg"
-SCRIPT_PATH="./pvpnwg.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="${SCRIPT_DIR}/pvpnwg.sh"
 
 # Colors for output
 RED='\033[0;31m'
@@ -53,7 +54,12 @@ check_deps() {
 
 check_sudo_config() {
     log "Checking sudo configuration..."
-    
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        warn "sudo not installed; skipping sudo configuration check"
+        return
+    fi
+
     if sudo -n -l >/dev/null 2>&1; then
         log "✓ Passwordless sudo is configured"
     else

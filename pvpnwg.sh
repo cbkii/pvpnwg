@@ -232,8 +232,12 @@ dns_latency_test() {
     vlog "No WG IP for DNS latency test"
     return 1
   fi
-  local output
-  output=$(dig +stats -4 -b "$wg_ip" "$target" @"$resolver" 2>&1 || true)
+  local output rc
+  if ! output=$(timeout 5 dig +stats -4 -b "$wg_ip" "$target" @"$resolver" 2>&1); then
+    rc=$?
+    vlog "dig to $resolver for $target failed (rc=$rc)"
+    return 1
+  fi
   local query_time
   query_time=$(echo "$output" | awk '/Query time:/{print $4}' | head -1)
   if [[ -n "$query_time" && "$query_time" =~ ^[0-9]+$ ]]; then
@@ -732,11 +736,19 @@ pf_request_once() {
   got_public=""
   prev="$(cat "$PORT_FILE" 2>/dev/null || true)"
   for proto in "${PF_PROTO_LIST[@]}"; do
-    local out
-    out=$(natpmpc -g "$gw" -a "$private" 0 "$proto" "$lease" 2>&1 || true)
-    vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
-    local st
-    st=$(pf_parse_status "$out")
+    local out rc st
+    if ! out=$(timeout 5 natpmpc -g "$gw" -a "$private" 0 "$proto" "$lease" 2>&1); then
+      rc=$?
+    else
+      rc=0
+    fi
+    if [[ $rc -eq 124 ]]; then
+      vlog "natpmpc($proto gw=$gw) => timeout"
+      st="timeout"
+    else
+      vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
+      st=$(pf_parse_status "$out")
+    fi
     case "$st" in
       mapped)
         local p
@@ -754,9 +766,12 @@ pf_request_once() {
     fi
 
     if [[ "$got_public" != "$prev" ]]; then
-      echo "$got_public" >"$PORT_FILE"
-      qb_set_port "$got_public" || log "WARN: qB sync to PF public $got_public failed"
-      log "PF mapped: public=$got_public private=$private gw=$gw (updated)"
+      if qb_set_port "$got_public"; then
+        echo "$got_public" >"$PORT_FILE"
+        log "PF mapped: public=$got_public private=$private gw=$gw (updated)"
+      else
+        log "WARN: qB sync to PF public $got_public failed"
+      fi
     else
       log "PF mapped unchanged: public=$got_public (kept)"
     fi
@@ -798,15 +813,19 @@ pf_diag() {
 
 pf_loop() {
   log "PF sync loop start (gw $(pf_detect_gateway), ${PF_RENEW_SECS}s cadence; backoff on failure)"
-  local backoff=$PF_BACKOFF_START
-  while true; do if pf_request_once; then
-    backoff=$PF_BACKOFF_START
-    sleep "$PF_RENEW_SECS"
-  else
-    sleep "$backoff"
-    backoff=$((backoff * 2))
-    [[ $backoff -gt $PF_BACKOFF_MAX ]] && backoff=$PF_BACKOFF_MAX
-  fi; done
+  local backoff=$PF_BACKOFF_START run=true
+  trap 'run=false' INT TERM
+  while $run; do
+    if pf_request_once; then
+      backoff=$PF_BACKOFF_START
+      sleep "$PF_RENEW_SECS"
+    else
+      sleep "$backoff"
+      backoff=$((backoff * 2))
+      [[ $backoff -gt $PF_BACKOFF_MAX ]] && backoff=$PF_BACKOFF_MAX
+    fi
+  done
+  trap - INT TERM
 }
 
 # ===========================
@@ -1458,6 +1477,6 @@ main() {
   esac
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "$0" && -z "${PVPNWG_NO_MAIN:-}" ]]; then
   main "$@"
 fi

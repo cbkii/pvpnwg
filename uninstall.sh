@@ -113,7 +113,8 @@ handle_user_data() {
     if [[ "$user" == "root" ]]; then
         home_dir="/root"
     else
-        home_dir="/home/$user"
+        home_dir=$(getent passwd "$user" | cut -d: -f6)
+        [[ -n "$home_dir" ]] || home_dir="/home/$user"
     fi
     
     local phome="${home_dir}/.pvpnwg"
