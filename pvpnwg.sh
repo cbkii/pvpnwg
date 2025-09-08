@@ -373,7 +373,16 @@ wg_unhealthy_reason(){
 # ===========================
 # qBittorrent helpers
 # ===========================
-qb_login(){ :>"$COOKIE_JAR"; local r; r=$(curl -sS -c "$COOKIE_JAR" -d "username=${WEBUI_USER}&password=${WEBUI_PASS}" "${WEBUI_URL%/}/api/v2/auth/login" || true); [[ "$r" == Ok.* ]]; }
+qb_login(){
+  :>"$COOKIE_JAR"
+  chmod 600 "$COOKIE_JAR"
+  local r
+  r=$(curl -sS -c "$COOKIE_JAR" \
+      --data-urlencode "username=${WEBUI_USER}" \
+      --data-urlencode "password=${WEBUI_PASS}" \
+      "${WEBUI_URL%/}/api/v2/auth/login" || true)
+  [[ "$r" == Ok.* ]]
+}
 qb_set_port_webui(){
   local port="$1"
   qb_login || { log "WARN: qBittorrent WebUI login failed"; return 1; }
