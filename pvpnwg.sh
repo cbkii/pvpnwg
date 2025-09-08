@@ -92,7 +92,6 @@ if [[ -n "${PF_PROTO_LIST:-}" ]]; then IFS=', ' read -r -a PF_PROTO_LIST <<<"${P
 # ===========================
 VERBOSE=0
 DRY_RUN=0
-BIN_SELF="$(readlink -f "$0" || echo "$0")"
 STATE_DIR="${PHOME}/state"
 TMP_DIR="${PHOME}/tmp"
 LOG_FILE="${PHOME}/pvpn.log"
@@ -310,7 +309,16 @@ iface_scan() {
   echo "Interfaces:"
   ip -o link show | awk -F': ' '$2!="lo"{print $2}' | sed 's/@.*//'
   read -rp "Use interface [${LAN_IF}]: " ans
-  [[ -n "${ans:-}" ]] && LAN_IF="$ans" && iface_save || vlog "Keep $LAN_IF"
+  if [[ -n "${ans:-}" ]]; then
+    local prev="$LAN_IF"
+    LAN_IF="$ans"
+    iface_save || {
+      LAN_IF="$prev"
+      vlog "Keep $LAN_IF"
+    }
+  else
+    vlog "Keep $LAN_IF"
+  fi
 }
 
 # ===========================
@@ -438,14 +446,15 @@ select_conf() {
     printf "%-25s %-20s %-8s %-10s\n" "FILE" "HOST" "RTT" "VALID"
   fi
 
-  for f in "${files[@]}"; do
-    local base="$(basename "$f")"
-    case "$mode" in
-      p2p) is_secure_core_name "$base" && continue ;;
-      sc)  is_secure_core_name "$base" || continue ;;
-      pf)  is_pf_name "$base" || continue ;;
-      any) : ;;
-    esac
+    for f in "${files[@]}"; do
+      local base
+      base="$(basename "$f")"
+      case "$mode" in
+        p2p) is_secure_core_name "$base" && continue ;;
+        sc)  is_secure_core_name "$base" || continue ;;
+        pf)  is_pf_name "$base" || continue ;;
+        any) : ;;
+      esac
     [[ -n "$cc" && "$base" != *"$cc"* ]] && continue
 
     # Validate config first
@@ -1197,7 +1206,7 @@ cmd_status() {
   if [[ -s "$TIME_FILE" ]]; then
     local last
     last=$(cat "$TIME_FILE")
-    echo "Last connect: $(date -d @\"$last\" '+%F %T') (elapsed $(($(date +%s) - last))s)"
+    echo "Last connect: $(date -d "@$last" '+%F %T') (elapsed $(( $(date +%s) - last ))s)"
   else echo "Last connect: unknown"; fi
   echo
   echo "=== Health ==="

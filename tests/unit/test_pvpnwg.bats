@@ -6,7 +6,8 @@ load ../test_helper.bats
 
 # Test setup
 setup() {
-    export TEST_TMPDIR=$(mktemp -d)
+    TEST_TMPDIR=$(mktemp -d)
+    export TEST_TMPDIR
     export PHOME="$TEST_TMPDIR/.pvpnwg"
     export CONFIG_DIR="$PHOME/configs"
     export STATE_DIR="$PHOME/state"
@@ -148,11 +149,11 @@ EOF
     run cmd_rename_pf
     [ -f "$CONFIG_DIR/mixP2PPF.conf" ]
 
-    function ping() {
-        echo "PING 1.2.3.4: 56 data bytes"
-        echo "64 bytes from 1.2.3.4: time=50.0 ms"
-    }
-    export -f ping
+      # shellcheck disable=SC2317
+      function ping() {
+          printf '%s\n' "PING 1.2.3.4: 56 data bytes" "64 bytes from 1.2.3.4: time=50.0 ms"
+      }
+      export -f ping
 
     run select_conf "pf"
     [ "$status" -eq 0 ]
@@ -182,6 +183,62 @@ EOF
     run pf_parse_status "$output"
     [ "$status" -eq 0 ]
     [[ "$output" == "error" ]]
+}
+
+# ===========================
+# Interface scan tests
+# ===========================
+
+iface_mock() {
+    printf '1: lo: <LOOPBACK>\n2: eth0: <UP>\n3: wlan0: <UP>\n'
+}
+
+@test "iface_scan keeps existing interface with empty input" {
+    # shellcheck disable=SC2030,SC2031
+    export VERBOSE=1
+    LAN_IF="eth0"
+    export -f iface_mock
+    # shellcheck disable=SC2317
+    function ip() { iface_mock; }
+    export -f ip
+    output_file="$BATS_TMPDIR/iface_scan_keep.txt"
+    iface_scan >"$output_file" 2>&1 <<<""
+    [ "$LAN_IF" = "eth0" ]
+    [ ! -f "$IFCONF_FILE" ]
+    grep -q "Keep eth0" "$output_file"
+}
+
+@test "iface_scan saves new interface" {
+    # shellcheck disable=SC2030,SC2031
+    export VERBOSE=1
+    LAN_IF="eth0"
+    export -f iface_mock
+    # shellcheck disable=SC2317
+    function ip() { iface_mock; }
+    export -f ip
+    output_file="$BATS_TMPDIR/iface_scan_set.txt"
+    iface_scan >"$output_file" 2>&1 <<<"wlan0"
+    [ "$LAN_IF" = "wlan0" ]
+    [[ "$(cat "$IFCONF_FILE")" == "wlan0" ]]
+    # shellcheck disable=SC2314
+    ! grep -q "Keep" "$output_file"
+}
+
+@test "iface_scan reverts on save failure" {
+    # shellcheck disable=SC2030,SC2031
+    export VERBOSE=1
+    LAN_IF="eth0"
+    export -f iface_mock
+    # shellcheck disable=SC2317
+    function ip() { iface_mock; }
+    export -f ip
+    iface_save() { return 1; }
+    export -f iface_save
+    output_file="$BATS_TMPDIR/iface_scan_fail.txt"
+    iface_scan >"$output_file" 2>&1 <<<"wlan0"
+    [ "$LAN_IF" = "eth0" ]
+    [ ! -f "$IFCONF_FILE" ]
+    grep -q "Keep eth0" "$output_file"
 }
 
 # ===========================
@@ -240,6 +297,7 @@ EOF
 @test "parse_globals handles verbose flag" {
     tmp_out="$TMP_DIR/pg_out"
     parse_globals -v connect > "$tmp_out"
+    # shellcheck disable=SC2031
     [[ "$VERBOSE" -eq 1 ]]
     [[ "$(cat "$tmp_out")" == "connect" ]]
 }
@@ -357,8 +415,9 @@ AllowedIPs = 0.0.0.0/0
 EOF
     
     # Mock ping to return RTT
-    function ping() { echo "PING 1.2.3.4: 56 data bytes\n64 bytes from 1.2.3.4: time=50.0 ms"; }
-    export -f ping
+      # shellcheck disable=SC2317
+      function ping() { printf '%s\n' "PING 1.2.3.4: 56 data bytes" "64 bytes from 1.2.3.4: time=50.0 ms"; }
+      export -f ping
     
     run select_conf "any"
     [ "$status" -eq 0 ]
