@@ -5,7 +5,8 @@ export BATS_TEST_SKIPPED=""
 
 # Helper functions for test setup
 setup_test_env() {
-    export TEST_TMPDIR=$(mktemp -d)
+    TEST_TMPDIR=$(mktemp -d)
+    export TEST_TMPDIR
     export PHOME="$TEST_TMPDIR/.pvpnwg"
     export CONFIG_DIR="$PHOME/configs"
     export STATE_DIR="$PHOME/state"
@@ -266,7 +267,8 @@ require_root() {
 # Test data generators
 generate_pf_history() {
     local count="${1:-5}"
-    local base_ts=$(date +%s)
+    local base_ts
+    base_ts=$(date +%s)
     
     for ((i=0; i<count; i++)); do
         local ts=$((base_ts + i * 60))
@@ -298,5 +300,6 @@ source_pvpnwg_functions() {
         return 1
     }
 
+    # shellcheck source=pvpnwg.sh
     PVPNWG_NO_MAIN=1 source "$script_path"
 }
