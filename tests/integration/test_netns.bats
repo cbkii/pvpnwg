@@ -269,7 +269,11 @@ teardown_mock_qb_webui() {
     
     function qb_login() {
         : > "$COOKIE_JAR"
-        local r; r=$(curl -sS -c "$COOKIE_JAR" -d "username=${WEBUI_USER}&password=${WEBUI_PASS}" "${WEBUI_URL%/}/api/v2/auth/login" || true)
+        chmod 600 "$COOKIE_JAR"
+        local r; r=$(curl -sS -c "$COOKIE_JAR" \
+            --data-urlencode "username=${WEBUI_USER}" \
+            --data-urlencode "password=${WEBUI_PASS}" \
+            "${WEBUI_URL%/}/api/v2/auth/login" || true)
         [[ "$r" == Ok.* ]]
     }
     

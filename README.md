@@ -127,7 +127,7 @@ DL_THRESHOLD_KBPS=33           # Reconnect if < 33 KB/s download
 # qBittorrent WebUI
 WEBUI_URL="http://192.168.1.50:8080"
 WEBUI_USER="admin"
-WEBUI_PASS="your_password"
+WEBUI_PASS="your_password"        # supports special characters
 
 # Port forwarding
 PF_RENEW_SECS=45               # NAT-PMP renewal interval
@@ -144,6 +144,8 @@ DNS_HEALTH=true                # Enable DNS latency checks
 DNS_LAT_MS=250                 # DNS latency threshold
 QBIT_HEALTH=true               # Enable qBittorrent health checks
 ```
+
+`WEBUI_PASS` accepts passwords with special characters.
 
 ## Usage
 
