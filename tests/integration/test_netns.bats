@@ -2,12 +2,14 @@
 # tests/integration/test_netns.bats — Integration tests using network namespaces
 # Run with: sudo bats tests/integration/test_netns.bats
 
-load ../test_helper
+load ../test_helper.bats
 
 setup() {
     require_root
     setup_test_env
-    setup_netns_test "pvpn-test"
+    if ! setup_netns_test "pvpn-test" >/dev/null 2>&1; then
+        skip "network namespaces unavailable"
+    fi
     source_pvpnwg_functions
 }
 
