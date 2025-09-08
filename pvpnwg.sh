@@ -367,7 +367,31 @@ qb_set_port_webui(){
   log "qB listen_port=${port} set (UPnP/NAT-PMP disabled)"
 }
 qb_conf_get_port(){ local f="$QB_CONF_PATH"; [[ -r "$f" ]] || { echo ""; return 1; }; awk -F'=' '/^Preferences\\ListenPort=/{print $2; exit}' "$f" 2>/dev/null; }
-qb_set_port(){ local port="$1"; qb_set_port_webui "$port" && return 0; if [[ -n "$QB_CONF_PATH" && -w "$QB_CONF_PATH" ]]; then if grep -q '^Preferences\\ListenPort=' "$QB_CONF_PATH" 2>/dev/null; then _run "sed -i 's/^Preferences\\\\ListenPort=.*/Preferences\\\\ListenPort=${port}/' '$QB_CONF_PATH'"; log "qB conf patched listen_port=${port} (restart qB)"; return 0; fi; fi; return 1; }
+qb_set_port(){
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] || { log "WARN: invalid qB port '$port'"; return 1; }
+  qb_set_port_webui "$port" && return 0
+  if [[ -n "$QB_CONF_PATH" && -w "$QB_CONF_PATH" ]]; then
+    if grep -q '^Preferences\\ListenPort=' "$QB_CONF_PATH" 2>/dev/null; then
+      local tmp
+      tmp=$(mktemp "${QB_CONF_PATH}.XXXXXX") || return 1
+      if while IFS= read -r line; do
+        if [[ "$line" == "Preferences\\ListenPort="* ]]; then
+          printf 'Preferences\\ListenPort=%s\n' "$port"
+        else
+          printf '%s\n' "$line"
+        fi
+      done <"$QB_CONF_PATH" >"$tmp"; then
+        mv "$tmp" "$QB_CONF_PATH"
+        log "qB conf patched listen_port=${port} (restart qB)"
+        return 0
+      else
+        rm -f "$tmp"
+      fi
+    fi
+  fi
+  return 1
+}
 qb_get_port(){ if qb_login; then curl -sS -b "$COOKIE_JAR" "${WEBUI_URL%/}/api/v2/app/preferences" | jq -r '.listen_port // empty'; else qb_conf_get_port || echo ""; fi }
 qb_fix_stalled(){ qb_login || { log "qB WebUI auth failed"; return 1; }; local url="${WEBUI_URL%/}"; local list; list=$(curl -sS -b "$COOKIE_JAR" "$url/api/v2/torrents/info?filter=stalled" || true); local hashes; hashes=$(echo "$list" | jq -r '.[].hash'); if [[ -z "$hashes" ]]; then log "No stalled torrents"; return 0; fi; while read -r h; do [[ -z "$h" ]] && continue; curl -sS -b "$COOKIE_JAR" --data-urlencode "hashes=$h" "$url/api/v2/torrents/reannounce" >/dev/null || true; curl -sS -b "$COOKIE_JAR" --data-urlencode "hashes=$h" "$url/api/v2/torrents/resume" >/dev/null || true; log "Reannounced+Resumed $h"; done <<<"$hashes"; }
 
@@ -653,7 +677,26 @@ cmd_status(){
 
 cmd_check(){ iface_load; local reason; if reason=$(should_reconnect); then log "Check reconnect ($reason)"; cmd_reconnect -p2p || { log "WARN retry --any"; cmd_reconnect -a || true; }; else log "Check: active download >= ${DL_THRESHOLD_KBPS} KB/s; skip"; fi }
 
-cmd_qb(){ case "${1:-}" in port) shift; [[ $# -lt 1 ]] && die "Usage: qb port PORT"; qb_set_port "$1";; fix-stalled) qb_fix_stalled;; health) qb_health_check && echo "qB health: OK" || echo "qB health: FAILED";; *) echo "Usage: $0 qb {port PORT|fix-stalled|health}"; return 1;; esac }
+cmd_qb(){
+  case "${1:-}" in
+    port)
+      shift
+      [[ $# -lt 1 ]] && die "Usage: qb port PORT"
+      [[ "$1" =~ ^[0-9]+$ ]] || die "PORT must be numeric"
+      qb_set_port "$1"
+      ;;
+    fix-stalled)
+      qb_fix_stalled
+      ;;
+    health)
+      qb_health_check && echo "qB health: OK" || echo "qB health: FAILED"
+      ;;
+    *)
+      echo "Usage: $0 qb {port PORT|fix-stalled|health}"
+      return 1
+      ;;
+  esac
+}
 
 cmd_pf(){ case "${1:-}" in start) pf_loop;; once) pf_request_once;; verify) pf_verify;; diag) pf_diag;; status) [[ -s "$PORT_FILE" ]] && echo "PF port (current/kept): $(cat "$PORT_FILE")" || echo "No PF state"; echo "Gateway: $(pf_detect_gateway)"; echo "Jitter: $(cat "$PF_JITTER_FILE" 2>/dev/null || echo 0)";; stop) echo "If systemd, stop pvpn-pf.service; if interactive, Ctrl+C";; *) echo "Usage: $0 pf {start|once|verify|diag|status|stop}"; return 1;; esac }
 
