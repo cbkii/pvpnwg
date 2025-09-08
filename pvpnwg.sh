@@ -138,7 +138,7 @@ die() {
 }
 _run() {
   if [[ $VERBOSE -eq 1 || $DRY_RUN -eq 1 ]]; then log "+" "$@"; fi
-  [[ $DRY_RUN -eq 1 ]] || eval "$@"
+  [[ $DRY_RUN -eq 1 ]] || "$@"
 }
 need_root() { [[ ${EUID} -eq 0 ]] || die "Run as root (sudo). Passwordless sudo required."; }
 
@@ -182,23 +182,37 @@ save_gw_state() {
   gwdev="$(current_gw || true)"
   [[ -n "$gwdev" ]] && echo "$gwdev" >"$GW_STATE" && vlog "Saved GW: $gwdev"
 }
-restore_gw_state() { if [[ -s "$GW_STATE" ]]; then
-  read -r gw dev <"$GW_STATE"
-  [[ -n "${gw:-}" && -n "${dev:-}" ]] && _run "ip route replace default via '$gw' dev '$dev'" && log "Restored default route: $gw $dev"
-fi; }
+restore_gw_state() {
+  if [[ -s "$GW_STATE" ]]; then
+    read -r gw dev <"$GW_STATE"
+    if [[ -n "${gw:-}" && -n "${dev:-}" ]]; then
+      _run ip route replace default via "$gw" dev "$dev"
+      log "Restored default route: $gw $dev"
+    fi
+  fi
+}
 
 # DNS backup/restore/dedupe
-_dns_tar() { _run "tar -cpf '$DNS_BACKUP' ${*@Q} 2>/dev/null || true"; }
+_dns_tar() { _run tar -cpf "$DNS_BACKUP" "$@" 2>/dev/null || true; }
 dns_backup() {
   detect_dns_backend
   case "$dns_backend" in systemd-resolved | flat) _dns_tar /etc/resolv.conf ;; resolvconf) _dns_tar /etc/resolvconf /etc/resolv.conf ;; esac
 }
-dns_restore() { [[ -f "$DNS_BACKUP" ]] && _run "tar -xpf '$DNS_BACKUP' -C /" && log "DNS restored from backup" || vlog "No DNS backup"; }
-dns_dedupe() { if [[ -f /etc/resolv.conf ]]; then
-  awk '!seen[$0]++' /etc/resolv.conf >"$TMP_DIR/resolv.conf.dedup"
-  _run "cp -f '$TMP_DIR/resolv.conf.dedup' /etc/resolv.conf"
-  log "Deduped resolv.conf"
-fi; }
+dns_restore() {
+  if [[ -f "$DNS_BACKUP" ]]; then
+    _run tar -xpf "$DNS_BACKUP" -C /
+    log "DNS restored from backup"
+  else
+    vlog "No DNS backup"
+  fi
+}
+dns_dedupe() {
+  if [[ -f /etc/resolv.conf ]]; then
+    awk '!seen[$0]++' /etc/resolv.conf >"$TMP_DIR/resolv.conf.dedup"
+    _run cp -f "$TMP_DIR/resolv.conf.dedup" /etc/resolv.conf
+    log "Deduped resolv.conf"
+  fi
+}
 
 dns_latency_test() {
   local resolver="${1:-10.2.0.1}" target="${2:-google.com}"
@@ -232,7 +246,7 @@ cmd_dns() {
       case "${2:-}" in
         proton)
           printf '%s\n' "nameserver 10.2.0.1" >"$TMP_DIR/resolv.conf.new"
-          _run "cp -f '$TMP_DIR/resolv.conf.new' /etc/resolv.conf"
+        _run cp -f "$TMP_DIR/resolv.conf.new" /etc/resolv.conf
           log "DNS set to Proton (10.2.0.1)"
           ;;
         system)
@@ -382,6 +396,8 @@ ping_rtt_ms() { ping -c1 -W1 "$1" 2>/dev/null | awk -F'=' '/time=/{print $NF}' |
 
 select_conf() {
   local mode="${1:-p2p}" cc="${2:-}" best_conf="" best_rtt=999999 valid_count=0
+  local _ng
+  _ng=$(shopt -p nullglob)
   shopt -s nullglob
   local files=("${CONFIG_DIR}"/*.conf)
   [[ ${#files[@]} -gt 0 ]] || die "No .conf in ${CONFIG_DIR}"
@@ -422,6 +438,7 @@ select_conf() {
     fi
   done
 
+  eval "$_ng"
   [[ $valid_count -gt 0 ]] || die "No valid configs found (mode=$mode cc=$cc)"
   [[ -n "$best_conf" ]] || die "No config matched (mode=$mode cc=$cc)"
   echo "$best_conf|$best_rtt"
@@ -432,15 +449,15 @@ select_conf() {
 # ===========================
 wg_up() {
   local conf="$1"
-  _run "mkdir -p /etc/wireguard"
-  _run "cp -f '$conf' '$TARGET_CONF'"
-  _run "wg-quick down '$IFACE' >/dev/null 2>&1 || true"
-  _run "wg-quick up '$IFACE'"
+_run mkdir -p /etc/wireguard
+_run cp -f "$conf" "$TARGET_CONF"
+_run wg-quick down "$IFACE" >/dev/null 2>&1 || true
+_run wg-quick up "$IFACE"
   date +%s >"$TIME_FILE"
   log "WG up via $(basename "$conf")"
 }
 wg_down() {
-  _run "wg-quick down '$IFACE' >/dev/null 2>&1 || true"
+_run wg-quick down "$IFACE" >/dev/null 2>&1 || true
   log "WG $IFACE down"
 }
 
@@ -477,27 +494,27 @@ wg_unhealthy_reason() {
   # Check if interface exists and is up
   if ! ip link show "$IFACE" >/dev/null 2>&1; then
     echo "no_interface"
-    return 0
+    return 1
   fi
 
   local link_state
   link_state=$(wg_link_state)
-  if [[ "$link_state" == "DOWN" ]]; then
-    echo "link_down"
-    return 0
-  fi
+    if [[ "$link_state" == "DOWN" ]]; then
+      echo "link_down"
+      return 1
+    fi
 
   # Check handshake age
   local handshake_age
   handshake_age=$(wg_handshake_age 2>/dev/null || echo "never")
-  if [[ "$handshake_age" == "never" ]]; then
-    echo "no_handshake"
-    return 0
-  fi
-  if [[ "$handshake_age" =~ ^[0-9]+$ && "$handshake_age" -gt "$HANDSHAKE_MAX_AGE" ]]; then
-    echo "handshake_old"
-    return 0
-  fi
+    if [[ "$handshake_age" == "never" ]]; then
+      echo "no_handshake"
+      return 1
+    fi
+    if [[ "$handshake_age" =~ ^[0-9]+$ && "$handshake_age" -gt "$HANDSHAKE_MAX_AGE" ]]; then
+      echo "handshake_old"
+      return 1
+    fi
 
   # Check endpoint latency
   local host
@@ -505,42 +522,41 @@ wg_unhealthy_reason() {
   if [[ -n "$host" ]]; then
     local rtt
     rtt=$(ping_rtt_ms "$host")
-    if [[ "$rtt" =~ ^[0-9.]+$ ]] && awk -v a="$rtt" -v b="$LATENCY_THRESHOLD_MS" 'BEGIN{exit !(a>b)}'; then
-      echo "endpoint_latency"
-      return 0
-    fi
+      if [[ "$rtt" =~ ^[0-9.]+$ ]] && awk -v a="$rtt" -v b="$LATENCY_THRESHOLD_MS" 'BEGIN{exit !(a>b)}'; then
+        echo "endpoint_latency"
+        return 1
+      fi
   fi
 
   echo "none"
-  return 1
+  return 0
 }
 
 # ===========================
 # qBittorrent helpers
 # ===========================
-qb_login() {
-  : >"$COOKIE_JAR"
-  chmod 600 "$COOKIE_JAR"
-  local r
-  r=$(curl -sS -c "$COOKIE_JAR" \
-    --data-urlencode "username=${WEBUI_USER}" \
-    --data-urlencode "password=${WEBUI_PASS}" \
-    "${WEBUI_URL%/}/api/v2/auth/login" || true)
-  [[ "$r" == Ok.* ]]
-}
-qb_set_port_webui() {
-  local port="$1"
-  qb_login || {
-    log "WARN: qBittorrent WebUI login failed"
-    return 1
+  qb_login() {
+    : >"$COOKIE_JAR"
+    chmod 600 "$COOKIE_JAR"
+    if ! printf 'username=%s&password=%s' "$WEBUI_USER" "$WEBUI_PASS" |
+      curl -sS --fail --connect-timeout 10 -c "$COOKIE_JAR" \
+        --data-binary @- "${WEBUI_URL%/}/api/v2/auth/login" >/dev/null; then
+      log "WARN: qBittorrent WebUI login failed"
+      return 1
+    fi
   }
-  local url="${WEBUI_URL%/}"
+  qb_set_port_webui() {
+    local port="$1"
+    qb_login || return 1
+    local url="${WEBUI_URL%/}"
   # Opinionated prefs: disable UPnP & random port
   local prefs
   prefs=$(jq -n --argjson p "$port" '{listen_port: ($p|tonumber), upnp:false, random_port:false}')
-  curl -sS -b "${COOKIE_JAR}" --data-urlencode "json=${prefs}" "${url}/api/v2/app/setPreferences" >/dev/null || return 1
-  local got
-  got=$(curl -sS -b "$COOKIE_JAR" "$url/api/v2/app/preferences" | jq -r '.listen_port // empty')
+    curl -sS --fail --connect-timeout 10 -b "$COOKIE_JAR" \
+      --data-urlencode "json=${prefs}" "${url}/api/v2/app/setPreferences" >/dev/null || return 1
+    local got
+    got=$(curl -sS --fail --connect-timeout 10 -b "$COOKIE_JAR" \
+      "$url/api/v2/app/preferences" | jq -r '.listen_port // empty') || return 1
   if [[ "$got" != "$port" ]]; then
     log "WARN: qB listen_port verify failed want=$port got=${got:-unset}"
     return 1
@@ -583,15 +599,20 @@ qb_set_port() {
   fi
   return 1
 }
-qb_get_port() { if qb_login; then curl -sS -b "$COOKIE_JAR" "${WEBUI_URL%/}/api/v2/app/preferences" | jq -r '.listen_port // empty'; else qb_conf_get_port || echo ""; fi; }
-qb_fix_stalled() {
-  qb_login || {
-    log "qB WebUI auth failed"
-    return 1
+  qb_get_port() {
+    if qb_login; then
+      curl -sS --fail --connect-timeout 10 -b "$COOKIE_JAR" \
+        "${WEBUI_URL%/}/api/v2/app/preferences" | jq -r '.listen_port // empty' || return 1
+    else
+      qb_conf_get_port || echo ""
+    fi
   }
-  local url="${WEBUI_URL%/}"
+  qb_fix_stalled() {
+    qb_login || return 1
+    local url="${WEBUI_URL%/}"
   local list
-  list=$(curl -sS -b "$COOKIE_JAR" "$url/api/v2/torrents/info?filter=stalled" || true)
+    list=$(curl -sS --fail --connect-timeout 10 -b "$COOKIE_JAR" \
+      "$url/api/v2/torrents/info?filter=stalled" || true)
   local hashes
   hashes=$(echo "$list" | jq -r '.[].hash')
   if [[ -z "$hashes" ]]; then
@@ -600,22 +621,25 @@ qb_fix_stalled() {
   fi
   while read -r h; do
     [[ -z "$h" ]] && continue
-    curl -sS -b "$COOKIE_JAR" --data-urlencode "hashes=$h" "$url/api/v2/torrents/reannounce" >/dev/null || true
-    curl -sS -b "$COOKIE_JAR" --data-urlencode "hashes=$h" "$url/api/v2/torrents/resume" >/dev/null || true
+      curl -sS --fail --connect-timeout 10 -b "$COOKIE_JAR" \
+        --data-urlencode "hashes=$h" "$url/api/v2/torrents/reannounce" >/dev/null || true
+      curl -sS --fail --connect-timeout 10 -b "$COOKIE_JAR" \
+        --data-urlencode "hashes=$h" "$url/api/v2/torrents/resume" >/dev/null || true
     log "Reannounced+Resumed $h"
   done <<<"$hashes"
 }
 
 qb_health_check() {
   if [[ "$QBIT_HEALTH" != "true" ]]; then return 0; fi
-  if qb_login; then
-    local version
-    version=$(curl -sS -b "$COOKIE_JAR" "${WEBUI_URL%/}/api/v2/app/version" 2>/dev/null || echo "")
-    if [[ -n "$version" ]]; then
-      vlog "qB health: OK (version $version)"
-      return 0
+    if qb_login; then
+      local version
+      version=$(curl -sS --fail --connect-timeout 10 -b "$COOKIE_JAR" \
+        "${WEBUI_URL%/}/api/v2/app/version" 2>/dev/null || echo "")
+      if [[ -n "$version" ]]; then
+        vlog "qB health: OK (version $version)"
+        return 0
+      fi
     fi
-  fi
   log "WARN: qB WebUI health check failed"
   return 1
 }
@@ -821,7 +845,9 @@ should_reconnect() {
 monitor_once() {
   # Check WG health first
   local wg_reason
-  wg_reason=$(wg_unhealthy_reason 2>/dev/null || echo "unknown")
+  if ! wg_reason=$(wg_unhealthy_reason 2>/dev/null); then
+    wg_reason=${wg_reason:-unknown}
+  fi
   if [[ "$wg_reason" != "none" ]]; then
     log "Monitor WG unhealthy (${wg_reason}) -> reconnect"
     cmd_reconnect -p2p || {
@@ -904,7 +930,7 @@ killswitch_enable() {
     return 1
   fi
 
-  _run "nft -f -" <<NFT
+_run nft -f - <<NFT
 table inet pvpnwg {
   chain output {
     type filter hook output priority 0; policy drop;
@@ -927,7 +953,7 @@ killswitch_disable() {
     log "nft not installed"
     return 1
   }
-  _run "nft delete table inet pvpnwg" || true
+_run nft delete table inet pvpnwg || true
   log "Killswitch (nft) disabled"
 }
 
@@ -937,13 +963,13 @@ killswitch_iptables_enable() {
     log "iptables not installed"
     return 1
   fi
-  _run "iptables -I OUTPUT 1 -m state --state ESTABLISHED,RELATED -j ACCEPT"
-  _run "iptables -I OUTPUT 2 -o ${IFACE} -j ACCEPT"
-  _run "iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT"
-  _run "iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT"
-  _run "iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT"
-  _run "iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT"
-  _run "iptables -P OUTPUT DROP"
+_run iptables -I OUTPUT 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
+_run iptables -I OUTPUT 2 -o "$IFACE" -j ACCEPT
+_run iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
+_run iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
+_run iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
+_run iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
+_run iptables -P OUTPUT DROP
   log "Killswitch (iptables) enabled"
 }
 
@@ -952,8 +978,8 @@ killswitch_iptables_disable() {
     log "iptables not installed"
     return 1
   }
-  _run "iptables -P OUTPUT ACCEPT"
-  _run "iptables -F OUTPUT"
+_run iptables -P OUTPUT ACCEPT
+_run iptables -F OUTPUT
   log "Killswitch (iptables) disabled"
 }
 
@@ -992,9 +1018,11 @@ cmd_diag() {
         rtt=$(ping_rtt_ms "$endpoint")
         echo "Endpoint RTT: ${rtt}ms (threshold: ${LATENCY_THRESHOLD_MS}ms)"
       fi
-      local reason
-      reason=$(wg_unhealthy_reason 2>/dev/null || echo "unknown")
-      echo "Health: $reason"
+        local reason
+        if ! reason=$(wg_unhealthy_reason 2>/dev/null); then
+          reason=${reason:-unknown}
+        fi
+        echo "Health: $reason"
       echo
       echo "Raw wg show:"
       wg show "$IFACE" 2>/dev/null || echo "Interface not found"
@@ -1029,7 +1057,7 @@ cmd_diag() {
       if qb_login 2>/dev/null; then
         echo "WebUI auth: OK"
         local version
-        version=$(curl -sS -b "$COOKIE_JAR" "${WEBUI_URL%/}/api/v2/app/version" 2>/dev/null || echo "unknown")
+          version=$(curl -sS --fail --connect-timeout 10 -b "$COOKIE_JAR" "${WEBUI_URL%/}/api/v2/app/version" 2>/dev/null || echo "unknown")
         echo "Version: $version"
       else
         echo "WebUI auth: FAILED"
@@ -1136,9 +1164,11 @@ cmd_status() {
   else echo "Last connect: unknown"; fi
   echo
   echo "=== Health ==="
-  local wg_health
-  wg_health=$(wg_unhealthy_reason 2>/dev/null || echo "unknown")
-  echo "WG health: $wg_health"
+    local wg_health
+    if ! wg_health=$(wg_unhealthy_reason 2>/dev/null); then
+      wg_health=${wg_health:-unknown}
+    fi
+    echo "WG health: $wg_health"
   local endpoint
   endpoint=$(wg_endpoint_host)
   if [[ -n "$endpoint" ]]; then
@@ -1233,14 +1263,17 @@ cmd_iface_scan() {
 }
 
 cmd_rename_sc() {
+  local _ng
+  _ng=$(shopt -p nullglob)
   shopt -s nullglob
   for f in "${CONFIG_DIR}"/*.conf; do
     if grep -qi 'secure[- ]*core' "$f" && [[ "$f" != *88.conf ]]; then
       local nf="${f%.conf}88.conf"
-      _run "mv -f '$f' '$nf'"
+      _run mv -f "$f" "$nf"
       log "Renamed $(basename "$f") -> $(basename "$nf")"
     fi
   done
+  eval "$_ng"
 }
 
 cmd_killswitch() {
@@ -1277,17 +1310,20 @@ cmd_validate() {
     configs)
       echo "Validating configs in $CONFIG_DIR:"
       printf "%-30s %s\n" "FILE" "STATUS"
-      local total=0 valid=0
-      shopt -s nullglob
-      for f in "${CONFIG_DIR}"/*.conf; do
-        local result
-        result=$(conf_validate "$f" 2>&1 || echo "invalid")
-        printf "%-30s %s\n" "$(basename "$f")" "$result"
-        ((total++))
-        [[ "$result" == "valid" ]] && ((valid++))
-      done
-      echo "Summary: $valid/$total valid"
-      [[ $valid -eq $total ]]
+        local total=0 valid=0
+        local _ng
+        _ng=$(shopt -p nullglob)
+        shopt -s nullglob
+        for f in "${CONFIG_DIR}"/*.conf; do
+          local result
+          result=$(conf_validate "$f" 2>&1 || echo "invalid")
+          printf "%-30s %s\n" "$(basename "$f")" "$result"
+          ((total++))
+          [[ "$result" == "valid" ]] && ((valid++))
+        done
+        eval "$_ng"
+        echo "Summary: $valid/$total valid"
+        [[ $valid -eq $total ]]
       ;;
     *)
       echo "Usage: $0 validate {conf FILE|configs}"

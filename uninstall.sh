@@ -22,6 +22,7 @@ check_root() {
 }
 
 stop_and_disable_services() {
+    command -v systemctl >/dev/null 2>&1 || { warn "systemd not available"; return; }
     log "Stopping and disabling systemd services..."
     
     local services=(
@@ -46,6 +47,7 @@ stop_and_disable_services() {
 }
 
 remove_systemd_units() {
+    command -v systemctl >/dev/null 2>&1 || { warn "systemd not available"; return; }
     log "Removing systemd units..."
     
     local units=(
