@@ -284,17 +284,12 @@ validate_test_env() {
 
 # Source control for functions under test
 source_pvpnwg_functions() {
-    # Source only the functions we want to test, not the main execution
-    # This requires some careful sourcing to avoid running main()
-    
+    # Source pvpnwg.sh without executing main()
     local script_path="${PVPNWG_SCRIPT:-./pvpnwg.sh}"
     [[ -f "$script_path" ]] || {
         echo "pvpnwg.sh not found at: $script_path" >&2
         return 1
     }
-    
-    # Extract just the function definitions, skip main execution
-    sed -n '/^[a-zA-Z_][a-zA-Z0-9_]*\s*()/,/^}/p' "$script_path" | \
-    grep -v '^main(' | \
-    source /dev/stdin 2>/dev/null || true
+
+    PVPNWG_NO_MAIN=1 source "$script_path"
 }
