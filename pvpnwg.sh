@@ -405,7 +405,16 @@ conf_validate() {
 is_secure_core_name() {
   local n="$1"
   shopt -s nocasematch
-  [[ "$n" == *88.conf || "$n" == *sc*.conf || "$n" == *secure*core*.conf ]]
+  [[ "$n" == *SC.conf || "$n" == *sc*.conf || "$n" == *secure*core*.conf ]]
+  local r=$?
+  shopt -u nocasematch
+  return $r
+}
+
+is_pf_name() {
+  local n="$1"
+  shopt -s nocasematch
+  [[ "$n" == *PF.conf || "$n" == *pf*.conf || "$n" == *port*forward*.conf ]]
   local r=$?
   shopt -u nocasematch
   return $r
@@ -431,7 +440,12 @@ select_conf() {
 
   for f in "${files[@]}"; do
     local base="$(basename "$f")"
-    case "$mode" in p2p) is_secure_core_name "$base" && continue ;; sc) is_secure_core_name "$base" || continue ;; any) : ;; esac
+    case "$mode" in
+      p2p) is_secure_core_name "$base" && continue ;;
+      sc)  is_secure_core_name "$base" || continue ;;
+      pf)  is_pf_name "$base" || continue ;;
+      any) : ;;
+    esac
     [[ -n "$cc" && "$base" != *"$cc"* ]] && continue
 
     # Validate config first
@@ -1111,8 +1125,12 @@ cmd_diag() {
 # ===========================
 cmd_connect() {
   local mode="p2p" cc=""
-  while [[ $# -gt 0 ]]; do case "$1" in -sc | --secure-core)
+  while [[ $# -gt 0 ]]; do case "$1" in -sc | --sc)
     mode="sc"
+    shift
+    ;;
+  -pf | --pf)
+    mode="pf"
     shift
     ;;
   -p2p | --p2p)
@@ -1286,8 +1304,24 @@ cmd_rename_sc() {
   _ng=$(shopt -p nullglob)
   shopt -s nullglob
   for f in "${CONFIG_DIR}"/*.conf; do
-    if grep -qi 'secure[- ]*core' "$f" && [[ "$f" != *88.conf ]]; then
-      local nf="${f%.conf}88.conf"
+    if grep -qi 'secure[- ]*core' "$f" && [[ "$f" != *SC.conf ]]; then
+      local nf="${f%.conf}SC.conf"
+      _run mv -f "$f" "$nf"
+      log "Renamed $(basename "$f") -> $(basename "$nf")"
+    fi
+  done
+  eval "$_ng"
+}
+
+cmd_rename_pf() {
+  local _ng
+  _ng=$(shopt -p nullglob)
+  shopt -s nullglob
+  for f in "${CONFIG_DIR}"/*.conf; do
+    if grep -q '^# Moderate NAT = off$' "$f" && \
+       grep -q '^# NAT-PMP (Port Forwarding) = on$' "$f" && \
+       [[ "$f" != *PF.conf ]]; then
+      local nf="${f%.conf}PF.conf"
       _run mv -f "$f" "$nf"
       log "Renamed $(basename "$f") -> $(basename "$nf")"
     fi
@@ -1394,7 +1428,7 @@ usage() {
 Usage: $0 [global] <command> [options]
 Global: -v|--verbose  --dry-run  [env LOG_JSON=true]
 Commands:
-  connect|c [--p2p|--secure-core|--any] [--cc CC]  Connect best server
+  connect|c [--p2p|--sc|--pf|--any] [--cc CC]  Connect best server
   reconnect|r                                      Reconnect
   disconnect|d                                     Down + restore routes/DNS
   status|s                                         Enhanced status panel
@@ -1405,7 +1439,8 @@ Commands:
   diag {wg|pf|dns|qb|all}                          Detailed diagnostics
   validate {conf FILE|configs}                     Config validation
   iface-scan                                       Pick LAN interface
-  rename-sc                                        Normalise SC filenames
+  rename-sc                                        Tag Secure Core filenames
+  rename-pf                                        Tag Port Forwarding filenames
   killswitch {enable|disable|iptables-enable|iptables-disable|status}
   reset                                            Hard reset
   init [--qb|--all]                                First-run config writer
@@ -1458,6 +1493,7 @@ main() {
     validate) cmd_validate "${rest[@]:-}" ;;
     iface-scan) cmd_iface_scan ;;
     rename-sc) cmd_rename_sc ;;
+    rename-pf) cmd_rename_pf ;;
     killswitch) cmd_killswitch "${rest[@]:-}" ;;
     reset) cmd_reset ;;
     init) cmd_init "${rest[@]:-}" ;;

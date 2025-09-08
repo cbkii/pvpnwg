@@ -2,6 +2,113 @@
 
 A **single-file, Bash-only CLI** for managing ProtonVPN WireGuard connections with advanced port forwarding, health monitoring, and qBittorrent integration. Built for **Debian Bookworm** with **passwordless sudo**.
 
+## Quick Start
+
+1. **Download the project**
+   ```bash
+   git clone https://github.com/cbkii/pvpnwg
+   cd pvpnwg
+   ```
+   Or download the latest release from the GitHub releases page.
+
+2. **Install dependencies**
+   ```bash
+   sudo apt update
+   sudo apt install -y wireguard-tools iproute2 curl jq iputils-ping natpmpc vnstat nftables dnsutils
+   ```
+
+3. **Run the installer**
+   ```bash
+   sudo ./install.sh
+   ```
+
+4. **Configure pvpnwg**
+   ```bash
+   sudo pvpnwg init
+   nano ~/.pvpnwg/pvpnwg.conf
+   cp /path/to/proton/*.conf ~/.pvpnwg/configs/
+   pvpnwg validate configs
+   ```
+
+5. **Connect**
+   ```bash
+   sudo pvpnwg connect
+   ```
+
+## WireGuard Config Files
+
+ProtonVPN supplies one WireGuard `.conf` file per server. Place every
+configuration you want the CLI to consider in `~/.pvpnwg/configs/`.
+
+1. **Gather configs** – download multiple WireGuard profiles from the ProtonVPN
+   dashboard.
+2. **Save them** – copy the files into `~/.pvpnwg/configs/`. Filenames must end
+   with `.conf` and should keep the two‑letter country code so filters like
+   `--cc us` work. Example: `us-nyc-01.conf`.
+3. **Tag special configs** – mark any special servers so the CLI can filter them:
+   - Secure Core: `pvpnwg rename-sc` appends `SC.conf` to matching files.
+   - Port Forwarding: `pvpnwg rename-pf` appends `PF.conf` when the config
+     contains both `# Moderate NAT = off` and `# NAT-PMP (Port Forwarding) = on`.
+     For P2P + Port Forwarding servers, manually append `P2P` first and then run
+     `rename-pf` to produce a `P2PPF.conf` suffix.
+   - P2P: manually append `P2P` to filenames for P2P-only servers.
+
+   Examples:
+   - `us-nyc-01.conf` – regular server
+   - `us-nyc-01PF.conf` – Port Forwarding server
+   - `ch-zurich-01SC.conf` – Secure Core server
+   - `nl-ams-01P2P.conf` – P2P server
+   - `ca-tor-01P2PPF.conf` – P2P server with Port Forwarding
+
+4. **Validate everything** – check that each file parses correctly:
+   ```bash
+   pvpnwg validate configs
+   ```
+
+The `connect` command will then select the lowest‑latency configuration matching
+any `--p2p`, `--sc`, `--pf`, or `--cc` filters.
+
+## Commands and Flags
+
+### Global Flags
+
+- `-v`, `--verbose` – emit detailed log output.
+- `--dry-run` – print commands without executing them.
+- `LOG_JSON=true` – environment variable that switches log format to JSON.
+
+### Commands
+
+- `connect [--p2p|--sc|--pf|--any] [--cc CC]` – ping each valid config
+  and bring up the fastest one. Use `--p2p` (default) for regular servers,
+  `--sc` for Secure Core, `--pf` for Port Forwarding, `--any` for all,
+  and `--cc` to restrict by country code.
+- `reconnect` – tear down and immediately re-establish the tunnel using the
+  existing profile.
+- `disconnect` – remove the WireGuard interface and restore routes/DNS.
+- `status` – display connection state, port-forward info, and health metrics.
+- `check` – run a one-time health check for idle time, handshake age, and
+  latency.
+- `qb {port PORT|fix-stalled|health}` – qBittorrent helpers for setting the
+  listen port, reannouncing stalled torrents, and checking WebUI health.
+- `pf {start|once|verify|diag|status|stop}` – control and inspect NAT-PMP
+  port forwarding.
+- `dns {backup|restore|dedupe|set|test|latency}` – manage resolv.conf, test for
+  leaks, and measure DNS latency.
+- `diag {wg|pf|dns|qb|all}` – print detailed diagnostics for a subsystem or for
+  all of them.
+- `validate {conf FILE|configs}` – validate a single config file or every file
+  in the configs directory.
+- `iface-scan` – detect the local LAN interface for use in killswitch rules.
+- `rename-sc` – append `SC.conf` to Secure Core configs.
+- `rename-pf` – append `PF.conf` to Port Forwarding configs.
+- `killswitch {enable|disable|iptables-enable|iptables-disable|status}` – manage
+  nftables or iptables based killswitch rules.
+- `reset` – bring down WireGuard and restore routing/DNS state.
+- `init [--qb|--all]` – create initial configuration files. `--qb` adds
+  qBittorrent settings; `--all` enables every optional service.
+- `monitor` – continuous monitor loop that enforces health checks and
+  reconnection logic.
+
 ## Features
 
 ### Core VPN Management
@@ -109,6 +216,8 @@ pvpnwg validate configs
 
 # Rename Secure-Core configs (optional)
 sudo pvpnwg rename-sc
+# Rename Port-Forwarding configs (optional)
+sudo pvpnwg rename-pf
 ```
 
 ### Key Configuration Options
@@ -155,7 +264,7 @@ QBIT_HEALTH=true               # Enable qBittorrent health checks
 sudo pvpnwg connect
 
 # Connect to Secure-Core server
-sudo pvpnwg connect --secure-core
+sudo pvpnwg connect --sc
 
 # Connect to any server type
 sudo pvpnwg connect --any
