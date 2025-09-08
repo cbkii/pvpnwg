@@ -426,6 +426,9 @@ sudo journalctl -u pvpn-pf.service -f
 cat ~/.pvpnwg/state/pf_history.tsv
 ```
 
+### Log Management
+`pvpnwg` writes logs to `~/.pvpnwg/pvpn.log`. When the log exceeds 1 MiB the script automatically truncates it to keep recent entries. Adjust the limit with `LOG_MAX_BYTES` in `pvpnwg.conf` or via the environment. For full rotation control consider using `logrotate`.
+
 ## Testing
 
 ### Prerequisites

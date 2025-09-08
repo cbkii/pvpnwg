@@ -43,13 +43,15 @@ HANDSHAKE_MAX_AGE_DEFAULT=120
 DNS_HEALTH_DEFAULT=true
 DNS_LAT_MS_DEFAULT=250
 QBIT_HEALTH_DEFAULT=true
+LOG_MAX_BYTES_DEFAULT=$((1024*1024))
 
 # ===========================
 # Config / Env
 # ===========================
 PHOME="${PVPN_PHOME:-${PHOME_DEFAULT}}"
 CONF_FILE="${PHOME}/pvpnwg.conf"
-[[ -f "$CONF_FILE" ]] && . "$CONF_FILE"  # shellcheck disable=SC1090
+# shellcheck disable=SC1090
+[[ -f "$CONF_FILE" ]] && . "$CONF_FILE"
 
 CONFIG_DIR="${CONFIG_DIR:-${CONFIG_DIR_DEFAULT}}"
 IFACE="${IFACE:-${IFACE_DEFAULT}}"
@@ -73,6 +75,7 @@ HANDSHAKE_MAX_AGE="${HANDSHAKE_MAX_AGE:-${HANDSHAKE_MAX_AGE_DEFAULT}}"
 DNS_HEALTH="${DNS_HEALTH:-${DNS_HEALTH_DEFAULT}}"
 DNS_LAT_MS="${DNS_LAT_MS:-${DNS_LAT_MS_DEFAULT}}"
 QBIT_HEALTH="${QBIT_HEALTH:-${QBIT_HEALTH_DEFAULT}}"
+LOG_MAX_BYTES="${LOG_MAX_BYTES:-${LOG_MAX_BYTES_DEFAULT}}"
 
 if [[ -n "${PF_PROTO_LIST:-}" ]]; then IFS=', ' read -r -a PF_PROTO_LIST <<<"${PF_PROTO_LIST}"; else PF_PROTO_LIST=("${PF_PROTO_LIST_DEFAULT[@]}"); fi
 
@@ -102,9 +105,19 @@ mkdir -p "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
 # ===========================
 # Logging helpers
 # ===========================
+rotate_logs(){
+  if [[ -f "$LOG_FILE" ]]; then
+    local size
+    size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+    if (( size > LOG_MAX_BYTES )); then
+      tail -c "$LOG_MAX_BYTES" "$LOG_FILE" > "${LOG_FILE}.tmp"
+      mv "${LOG_FILE}.tmp" "$LOG_FILE"
+    fi
+  fi
+}
 _log_plain(){ printf "%s %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE" >&2; }
 _log_json(){ jq -cn --arg ts "$(date -Iseconds)" --arg msg "$*" '{ts:$ts, msg:$msg}' | tee -a "$LOG_FILE" >&2; }
-log(){ if [[ "$LOG_JSON" == true ]]; then _log_json "$*"; else _log_plain "$*"; fi }
+log(){ rotate_logs; if [[ "$LOG_JSON" == true ]]; then _log_json "$*"; else _log_plain "$*"; fi }
 vlog(){ [[ $VERBOSE -eq 1 ]] && log "$@"; }
 die(){ log "ERROR: $*"; exit 1; }
 _run(){ if [[ $VERBOSE -eq 1 || $DRY_RUN -eq 1 ]]; then log "+ $*"; fi; [[ $DRY_RUN -eq 1 ]] || eval "$@"; }
