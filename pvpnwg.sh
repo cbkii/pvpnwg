@@ -50,9 +50,12 @@ LOG_MAX_BYTES_DEFAULT=$((1024*1024))
 # ===========================
 PHOME="${PVPN_PHOME:-${PHOME_DEFAULT}}"
 CONF_FILE="${PHOME}/pvpnwg.conf"
-# shellcheck disable=SC1090
-[[ -f "$CONF_FILE" ]] && . "$CONF_FILE"
-
+CONF_WARN_PERMS=""
+if [[ -f "$CONF_FILE" ]]; then
+  conf_perms=$(stat -c '%a' "$CONF_FILE" 2>/dev/null || echo "")
+  [[ "$conf_perms" != "600" ]] && CONF_WARN_PERMS="$conf_perms"
+  . "$CONF_FILE"  # shellcheck disable=SC1090
+fi
 CONFIG_DIR="${CONFIG_DIR:-${CONFIG_DIR_DEFAULT}}"
 IFACE="${IFACE:-${IFACE_DEFAULT}}"
 TARGET_CONF="/etc/wireguard/${IFACE}.conf"
@@ -135,6 +138,9 @@ check_deps(){
   fi
   sudo -n true 2>/dev/null || die "Passwordless sudo required (NOPASSWD)."
 }
+
+# Warn if config permissions are too permissive
+[[ -n "${CONF_WARN_PERMS}" ]] && log "WARN: $CONF_FILE permissions are ${CONF_WARN_PERMS}; expected 600"
 
 # ===========================
 # DNS & routing state
@@ -563,7 +569,20 @@ killswitch_disable(){ command -v nft >/dev/null 2>&1 || { log "nft not installed
 killswitch_iptables_enable(){ if ! command -v iptables >/dev/null 2>&1; then log "iptables not installed"; return 1; fi; _run "iptables -I OUTPUT 1 -m state --state ESTABLISHED,RELATED -j ACCEPT"; _run "iptables -I OUTPUT 2 -o ${IFACE} -j ACCEPT"; _run "iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT"; _run "iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT"; _run "iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT"; _run "iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT"; _run "iptables -P OUTPUT DROP"; log "Killswitch (iptables) enabled"; }
 killswitch_iptables_disable(){ command -v iptables >/dev/null 2>&1 || { log "iptables not installed"; return 1; }; _run "iptables -P OUTPUT ACCEPT"; _run "iptables -F OUTPUT"; log "Killswitch (iptables) disabled"; }
 
-killswitch_status(){ if command -v nft >/dev/null 2>&1 && nft list table inet pvpnwg >/dev/null 2>&1; then echo "nft:enabled"; else echo "nft:disabled"; fi }
+killswitch_status(){
+  if command -v nft >/dev/null 2>&1 && nft list table inet pvpnwg >/dev/null 2>&1; then
+    echo "nft:enabled"
+  elif command -v iptables >/dev/null 2>&1; then
+    if iptables -S OUTPUT 2>/dev/null | grep -q "^-P OUTPUT DROP" && \
+       iptables -C OUTPUT -o "${IFACE}" -j ACCEPT >/dev/null 2>&1; then
+      echo "iptables:enabled"
+    else
+      echo "iptables:disabled"
+    fi
+  else
+    echo "none:disabled"
+  fi
+}
 
 # ===========================
 # Enhanced diagnostics
@@ -660,7 +679,7 @@ cmd_status(){
   echo "=== Ports ==="; if [[ -s "$PORT_FILE" ]]; then local p; p=$(cat "$PORT_FILE"); echo "PF public (kept): $p"; if qb_port=$(qb_get_port 2>/dev/null); then echo "qB listen_port: $qb_port"; [[ "$qb_port" == "$p" ]] && echo "Port status: OK" || echo "Port status: MISMATCH"; else echo "qB: not reachable"; fi; else echo "No PF state yet"; fi; echo
   echo "=== Policy ==="; echo "Time limit: ${TIME_LIMIT_SECS}s | Idle: ${DL_THRESHOLD_KBPS} KB/s | LAN_IF=$LAN_IF"; if [[ -s "$TIME_FILE" ]]; then local last; last=$(cat "$TIME_FILE"); echo "Last connect: $(date -d @\"$last\" '+%F %T') (elapsed $(( $(date +%s)-last ))s)"; else echo "Last connect: unknown"; fi; echo
   echo "=== Health ==="; local wg_health; wg_health=$(wg_unhealthy_reason 2>/dev/null || echo "unknown"); echo "WG health: $wg_health"; local endpoint; endpoint=$(wg_endpoint_host); if [[ -n "$endpoint" ]]; then local rtt; rtt=$(ping_rtt_ms "$endpoint"); echo "Endpoint RTT: ${rtt}ms (threshold: ${LATENCY_THRESHOLD_MS}ms)"; fi; echo
-  echo "=== DNS/Killswitch ==="; echo "DNS backend: $dns_backend"; echo "Kill: $(killswitch_status)"; echo
+  echo "=== DNS/Killswitch ==="; echo "DNS backend: $dns_backend"; local ks ks_backend ks_state; ks=$(killswitch_status); ks_backend=${ks%%:*}; ks_state=${ks##*:}; echo "Kill: ${ks_state} (${ks_backend})"; echo
   echo "=== PF ==="; echo "Gateway: $(pf_detect_gateway)"; echo "Jitter count: $(cat "$PF_JITTER_FILE" 2>/dev/null || echo 0)"; [[ -s "$PF_HISTORY" ]] && { echo "History (tail):"; tail -n 5 "$PF_HISTORY"; } || echo "No PF history"
 }
 
@@ -728,6 +747,7 @@ DNS_HEALTH=${DNS_HEALTH}
 DNS_LAT_MS=$DNS_LAT_MS
 QBIT_HEALTH=${QBIT_HEALTH}
 EOF
+  chmod 600 "$CONF_FILE"
   log "Wrote $CONF_FILE"
   if [[ "${1:-}" == "--qb" || "${1:-}" == "--all" ]]; then qb_login || true; qb_set_port "${PF_STATIC_FALLBACK_PORT}" || true; fi
   echo "Init complete. Edit $CONF_FILE as needed."
@@ -755,7 +775,8 @@ Commands:
   reset                                            Hard reset
   init [--qb|--all]                                First-run config writer
   monitor                                          Enhanced monitor loop
-EOF }
+EOF
+}
 
 parse_globals(){ local args=(); while [[ $# -gt 0 ]]; do case "$1" in -v|--verbose) VERBOSE=1; shift;; --dry-run) DRY_RUN=1; shift;; --) shift; break;; *) args+=("$1"); shift;; esac; done; printf '%s\n' "${args[@]}"; }
 
