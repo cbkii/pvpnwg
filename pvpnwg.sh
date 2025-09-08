@@ -119,19 +119,25 @@ rotate_logs() {
     fi
   fi
 }
-_log_plain() { printf "%s %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE" >&2; }
-_log_json() { jq -cn --arg ts "$(date -Iseconds)" --arg msg "$*" '{ts:$ts, msg:$msg}' | tee -a "$LOG_FILE" >&2; }
+_log_plain() {
+  printf "%s %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$(printf '%s ' "$@" | sed 's/ $//')" \
+    | tee -a "$LOG_FILE" >&2
+}
+_log_json() {
+  jq -cn --arg ts "$(date -Iseconds)" --arg msg "$(printf '%s ' "$@" | sed 's/ $//')" '{ts:$ts, msg:$msg}' \
+    | tee -a "$LOG_FILE" >&2
+}
 log() {
   rotate_logs
-  if [[ "$LOG_JSON" == true ]]; then _log_json "$*"; else _log_plain "$*"; fi
+  if [[ "$LOG_JSON" == true ]]; then _log_json "$@"; else _log_plain "$@"; fi
 }
 vlog() { [[ $VERBOSE -eq 1 ]] && log "$@"; }
 die() {
-  log "ERROR: $*"
+  log "ERROR:" "$@"
   exit 1
 }
 _run() {
-  if [[ $VERBOSE -eq 1 || $DRY_RUN -eq 1 ]]; then log "+ $*"; fi
+  if [[ $VERBOSE -eq 1 || $DRY_RUN -eq 1 ]]; then log "+" "$@"; fi
   [[ $DRY_RUN -eq 1 ]] || eval "$@"
 }
 need_root() { [[ ${EUID} -eq 0 ]] || die "Run as root (sudo). Passwordless sudo required."; }
@@ -182,7 +188,7 @@ restore_gw_state() { if [[ -s "$GW_STATE" ]]; then
 fi; }
 
 # DNS backup/restore/dedupe
-_dns_tar() { _run "tar -cpf '$DNS_BACKUP' $* 2>/dev/null || true"; }
+_dns_tar() { _run "tar -cpf '$DNS_BACKUP' ${*@Q} 2>/dev/null || true"; }
 dns_backup() {
   detect_dns_backend
   case "$dns_backend" in systemd-resolved | flat) _dns_tar /etc/resolv.conf ;; resolvconf) _dns_tar /etc/resolvconf /etc/resolv.conf ;; esac
@@ -898,7 +904,7 @@ killswitch_enable() {
     return 1
   fi
 
-  _run "nft -f -" <<'NFT'
+  _run "nft -f -" <<NFT
 table inet pvpnwg {
   chain output {
     type filter hook output priority 0; policy drop;
