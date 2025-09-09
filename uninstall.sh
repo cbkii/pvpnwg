@@ -158,20 +158,45 @@ handle_user_data() {
     fi
 }
 
+dns_restore_generic() {
+    if command -v resolvectl >/dev/null 2>&1; then
+        resolvectl revert pvpnwg0 >/dev/null 2>&1 || true
+    elif command -v resolvconf >/dev/null 2>&1; then
+        resolvconf -u >/dev/null 2>&1 || true
+    else
+        printf '%s\n' 'nameserver 1.1.1.1' 'nameserver 8.8.8.8' >/tmp/resolv.conf.generic
+        cp -f /tmp/resolv.conf.generic /etc/resolv.conf 2>/dev/null || true
+    fi
+    log "✓ DNS restored (generic)"
+}
+
 restore_dns_if_needed() {
     local user="${RUN_USER:-$(logname 2>/dev/null || echo root)}"
     local home_dir
     home_dir="${RUN_HOME:-$(getent passwd "$user" | cut -d: -f6)}"
     home_dir="${home_dir:-/root}"
     local dns_backup="${home_dir}/.pvpnwg/state/dns_backup.tar"
-    
+
     if [[ -f "$dns_backup" ]]; then
         read -p "Restore DNS from backup? [Y/n] " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Nn]$ ]]; then
             log "Restoring DNS..."
-            tar -xpf "$dns_backup" -C / 2>/dev/null || true
-            log "✓ DNS restored"
+            if tar -tf "$dns_backup" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null; then
+                warn "Unsafe paths in DNS backup; using generic restore"
+                dns_restore_generic
+            else
+                local tmp
+                tmp=$(mktemp -d)
+                if tar -xpf "$dns_backup" -C "$tmp" 2>/dev/null; then
+                    cp -a "$tmp/." / 2>/dev/null || true
+                    log "✓ DNS restored"
+                else
+                    warn "DNS restore failed; using generic restore"
+                    dns_restore_generic
+                fi
+                rm -rf "$tmp"
+            fi
         fi
     fi
 }
