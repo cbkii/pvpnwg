@@ -348,7 +348,7 @@ setup_user_config() {
 
   if [[ ! -f "$phome/pvpnwg.conf" ]]; then
     log "Running init to create default config..."
-    run_as_user "$user" "${INSTALL_DIR}/${BIN_NAME}" init
+    run_as_user "$user" env HOME="$home_dir" PHOME="$phome" CONFIG_DIR="$phome/configs" "${INSTALL_DIR}/${BIN_NAME}" init
   else
     log "✓ Config already exists at $phome/pvpnwg.conf"
   fi

@@ -8,19 +8,37 @@ load ../test_helper.bats
 setup() {
     TEST_TMPDIR=$(mktemp -d)
     export TEST_TMPDIR
-    export PHOME="$TEST_TMPDIR/.pvpnwg"
-    export CONFIG_DIR="$PHOME/configs"
-    export STATE_DIR="$PHOME/state"
-    export TMP_DIR="$PHOME/tmp"
-    export TARGET_CONF="$PHOME/target.conf"
-    export VERBOSE=0
-    export DRY_RUN=1
-    export PVPNWG_USER="$(id -un)"
+    PHOME="$TEST_TMPDIR/.pvpnwg"
+    CONFIG_DIR="$PHOME/configs"
+    STATE_DIR="$PHOME/state"
+    TMP_DIR="$PHOME/tmp"
+    TARGET_CONF="$PHOME/target.conf"
+    VERBOSE=0
+    DRY_RUN=1
+    PVPNWG_USER="$(id -un)"
 
     mkdir -p "$PHOME" "$CONFIG_DIR" "$STATE_DIR" "$TMP_DIR"
-    
+
     # Source the script functions (skip main execution)
     source ./pvpnwg.sh 2>/dev/null || true
+
+    # Restore test paths in case sourcing reset them
+    PHOME="$TEST_TMPDIR/.pvpnwg"
+    CONFIG_DIR="$PHOME/configs"
+    STATE_DIR="$PHOME/state"
+    TMP_DIR="$PHOME/tmp"
+    TARGET_CONF="$PHOME/target.conf"
+    PORT_FILE="$STATE_DIR/mapped_port.txt"
+    PF_HISTORY="$STATE_DIR/pf_history.tsv"
+    PF_JITTER_FILE="$STATE_DIR/pf_jitter_count.txt"
+    HANDSHAKE_FILE="$STATE_DIR/last_handshake.txt"
+    TIME_FILE="$STATE_DIR/last_connect_epoch.txt"
+    DNS_BACKUP="$STATE_DIR/dns_backup.tar"
+    GW_STATE="$STATE_DIR/gw_state.txt"
+    IFCONF_FILE="$STATE_DIR/lan_if.txt"
+    COOKIE_JAR="$STATE_DIR/qb_cookie.txt"
+    MON_FAILS_FILE="$STATE_DIR/monitor_fail_count.txt"
+    export PHOME CONFIG_DIR STATE_DIR TMP_DIR TARGET_CONF PORT_FILE PF_HISTORY PF_JITTER_FILE HANDSHAKE_FILE TIME_FILE DNS_BACKUP GW_STATE IFCONF_FILE COOKIE_JAR MON_FAILS_FILE VERBOSE DRY_RUN PVPNWG_USER
 }
 
 teardown() {
