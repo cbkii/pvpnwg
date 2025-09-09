@@ -2,6 +2,27 @@
 # install.sh — Install enhanced ProtonVPN WireGuard CLI
 set -euo pipefail
 
+# Pre-parse for --user override
+CLI_USER=""
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --user=*) CLI_USER="${arg#*=}" ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+set -- "${ARGS[@]}"
+
+RUN_USER=""
+if [[ -n "$CLI_USER" ]]; then
+    RUN_USER="$CLI_USER"
+elif [[ -n "${SUDO_USER:-}" ]]; then
+    RUN_USER="$SUDO_USER"
+else
+    RUN_USER="$(id -un)"
+fi
+RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+
 INSTALL_DIR="/usr/local/bin"
 SYSTEMD_DIR="/etc/systemd/system"
 BIN_NAME="pvpnwg"
@@ -53,30 +74,8 @@ check_deps() {
 }
 
 check_sudo_config() {
-    log "Checking sudo configuration..."
-
-    if ! command -v sudo >/dev/null 2>&1; then
-        warn "sudo not installed; skipping sudo configuration check"
-        return
-    fi
-
-    if sudo -n -l >/dev/null 2>&1; then
-        log "✓ Passwordless sudo is configured"
-    else
-        warn "Passwordless sudo not configured!"
-        echo
-        echo "Add this line to /etc/sudoers (via 'visudo'):"
-        echo "$(whoami) ALL=(ALL) NOPASSWD: ALL"
-        echo
-        echo "Or for more restrictive access:"
-        echo "$(whoami) ALL=(ALL) NOPASSWD: /usr/bin/ip, /usr/bin/wg, /usr/bin/wg-quick, /usr/bin/nft, /usr/bin/iptables"
-        echo
-        read -p "Continue anyway? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
-    fi
+    log "Ensure passwordless sudo is configured for pvpnwg runtime commands"
+    command -v sudo >/dev/null 2>&1 || warn "sudo not installed"
 }
 
 install_binary() {
@@ -188,9 +187,8 @@ EOF
 }
 
 setup_user_config() {
-    local user="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
-    local home_dir
-    home_dir="$(getent passwd "$user" | cut -d: -f6)"
+    local user="$RUN_USER"
+    local home_dir="$RUN_HOME"
     local phome="${home_dir}/.pvpnwg"
 
     log "Setting up user configuration for: $user"

@@ -75,7 +75,7 @@ LOG_MAX_BYTES_DEFAULT=$((1024 * 1024))
 # ===========================
 # Config / Env
 # ===========================
-PHOME="${PHOME:-${PVPN_PHOME:-${PHOME_DEFAULT}}}"
+PHOME="${PHOME:-${PHOME_DEFAULT}}"
 CONF_FILE="${PHOME}/pvpnwg.conf"
 CONF_WARN_PERMS=""
 if [[ -f "$CONF_FILE" ]]; then
@@ -110,6 +110,15 @@ LOG_MAX_BYTES="${LOG_MAX_BYTES:-${LOG_MAX_BYTES_DEFAULT}}"
 
 if [[ -n "${PF_PROTO_LIST:-}" ]]; then IFS=', ' read -r -a PF_PROTO_LIST <<<"${PF_PROTO_LIST}"; else PF_PROTO_LIST=("${PF_PROTO_LIST_DEFAULT[@]}"); fi
 
+# Run command as target user when invoked via sudo
+run_as_user() {
+  if [[ $EUID -eq "$RUN_UID" ]]; then
+    "$@"
+  else
+    sudo -u "#$RUN_UID" "$@"
+  fi
+}
+
 # ===========================
 # Runtime & paths
 # ===========================
@@ -133,8 +142,9 @@ PF_HISTORY_KEEP=3
 PF_JITTER_FILE="${STATE_DIR}/pf_jitter_count.txt"
 HANDSHAKE_FILE="${STATE_DIR}/last_handshake.txt"
 
-mkdir -p "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
-chown "${RUN_UID}:${RUN_GID}" "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}" 2>/dev/null || true
+run_as_user mkdir -p "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
+run_as_user touch "$LOG_FILE" "$TIME_FILE" "$PORT_FILE" "$COOKIE_JAR" \
+  "$MON_FAILS_FILE" "$PF_HISTORY" "$PF_JITTER_FILE" "$HANDSHAKE_FILE"
 
 # ===========================
 # Logging helpers
@@ -170,7 +180,7 @@ _run() {
   if [[ $VERBOSE -eq 1 || $DRY_RUN -eq 1 ]]; then log "+" "$@"; fi
   [[ $DRY_RUN -eq 1 ]] || "$@"
 }
-need_root() { [[ ${EUID} -eq 0 ]] || die "Run as root (sudo)."; }
+need_root() { [[ ${EUID} -eq 0 ]] || die "Passwordless sudo required."; }
 
 check_deps() {
   local -a req=(ip wg wg-quick curl jq awk sed grep ping natpmpc)
@@ -702,6 +712,7 @@ qb_set_port() {
         fi
       done <"$QB_CONF_PATH" >"$tmp"; then
         mv "$tmp" "$QB_CONF_PATH"
+        chown "${RUN_UID}:${RUN_GID}" "$QB_CONF_PATH" 2>/dev/null || true
         log "qB conf patched listen_port=${port} (restart qB)"
         return 0
       else
