@@ -35,6 +35,27 @@ A **single-file, Bash-only CLI** for managing ProtonVPN WireGuard connections wi
    sudo pvpnwg connect
    ```
 
+## Optional Shell Aliases
+
+To avoid typing `sudo` for every command, add a convenient alias to your shell
+configuration (for example, `~/.bashrc` or `~/.zshrc`):
+
+```bash
+# automatically target your own account when using sudo
+alias pv='sudo pvpnwg'
+
+# common helpers
+alias pvc='pv connect'
+alias pvd='pv disconnect'
+alias pvs='pv status'
+alias pfp='pv pf start'
+alias pfv='pv pf verify'
+```
+
+Reload your shell or source the file after editing. `pvpnwg` infers the
+invoking user automatically; specify `--user=NAME` only if the script cannot
+determine the correct account.
+
 ## WireGuard Config Files
 
 ProtonVPN supplies one WireGuard `.conf` file per server. Place every
@@ -74,7 +95,21 @@ any `--p2p`, `--sc`, `--pf`, or `--cc` filters.
 
 - `-v`, `--verbose` – emit detailed log output.
 - `--dry-run` – print commands without executing them.
+- `--user=NAME` – run as and store user-specific data under `NAME`'s home.
+- `--pf-proto=udp[,tcp]` – choose NAT-PMP protocols (default `udp,tcp`).
+- `--pf-require-both=false` – succeed if any selected protocol maps.
 - `LOG_JSON=true` – environment variable that switches log format to JSON.
+
+### Target user (`--user`)
+
+`pvpnwg` stores its configuration, logs, and port‑forward state in the home
+directory of a non‑root account (for example, `~/.pvpnwg`). The script normally
+infers the correct account from `$USER` or `$SUDO_USER`, so typical invocations
+do not require extra flags. In contexts where no user can be detected—such as
+systemd services, cron jobs, or a root shell—use `--user=NAME` (or set
+`PVPNWG_USER=NAME`) to specify which account owns the data. This ensures files
+end up under the intended home and with the correct ownership, and also lets you
+manage multiple per-user configuration trees when needed.
 
 ### Commands
 
@@ -116,10 +151,11 @@ any `--p2p`, `--sc`, `--pf`, or `--cc` filters.
 - **Country filtering**: `--cc <CC>` for specific country codes
 - **Config validation**: Pre-connection validation of WireGuard configs
 - **Health monitoring**: Time limits, idle detection, handshake age, endpoint latency
-- **DNS management**: Backend-aware DNS backup/restore with Proton DNS support
+- **DNS management**: Backend-aware DNS backup/restore with systemd-resolved integration and IPv4-only Proton DNS support
 
 ### Port Forwarding (Gluetun-style)
 - **NAT-PMP (6A)** with autodetected gateway + `10.2.0.1` fallback
+- **Dual UDP+TCP mappings** by default; override via `--pf-proto`.
 - **Stable mapping semantics**: Only update qBittorrent when port actually changes
 - **TRY AGAIN classification**: Detect servers that don't support PF
 - **Jitter detection**: Track and warn about unstable port mappings
