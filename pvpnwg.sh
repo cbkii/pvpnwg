@@ -1222,12 +1222,15 @@ killswitch_iptables_enable() {
     log "iptables not installed"
     return 1
   fi
-_run iptables -I OUTPUT 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
-_run iptables -I OUTPUT 2 -o "$IFACE" -j ACCEPT
-_run iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
-_run iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
-_run iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
-_run iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
+  _run iptables -N pvpnwg-out >/dev/null 2>&1 || true
+  _run iptables -F pvpnwg-out
+  _run iptables -I OUTPUT 1 -j pvpnwg-out
+  _run iptables -A pvpnwg-out -m state --state ESTABLISHED,RELATED -j ACCEPT
+  _run iptables -A pvpnwg-out -o "$IFACE" -j ACCEPT
+  _run iptables -A pvpnwg-out -d 127.0.0.0/8 -j ACCEPT
+  _run iptables -A pvpnwg-out -d 10.0.0.0/8 -j ACCEPT
+  _run iptables -A pvpnwg-out -d 172.16.0.0/12 -j ACCEPT
+  _run iptables -A pvpnwg-out -d 192.168.0.0/16 -j ACCEPT
   local host port ip4
   if ip link show "$IFACE" >/dev/null 2>&1 && wg show "$IFACE" endpoints | grep -q ':'; then
     host=$(wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $1; exit}')
@@ -1238,9 +1241,9 @@ _run iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
   fi
   if [[ -n $host && -n $port ]]; then
     ip4=$(getent ahostsv4 "$host" | awk '/STREAM/ {print $1; exit}')
-    [[ -n $ip4 ]] && _run iptables -I OUTPUT 3 -o "$LAN_IF" -p udp -d "$ip4" --dport "$port" -j ACCEPT
+    [[ -n $ip4 ]] && _run iptables -A pvpnwg-out -o "$LAN_IF" -p udp -d "$ip4" --dport "$port" -j ACCEPT
   fi
-_run iptables -P OUTPUT DROP
+  _run iptables -P OUTPUT DROP
   log "Killswitch (iptables) enabled"
 }
 
@@ -1249,8 +1252,9 @@ killswitch_iptables_disable() {
     log "iptables not installed"
     return 1
   }
-_run iptables -P OUTPUT ACCEPT
-_run iptables -F OUTPUT
+  _run iptables -P OUTPUT ACCEPT
+  _run iptables -D OUTPUT -j pvpnwg-out >/dev/null 2>&1 || true
+  _run iptables -F pvpnwg-out >/dev/null 2>&1 || true
   log "Killswitch (iptables) disabled"
 }
 

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# mock iptables for tests
+exit 1
