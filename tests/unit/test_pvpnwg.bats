@@ -180,21 +180,18 @@ EOF
     local output="Mapped public port 12345 to local port 51820 using UDP"
     run pf_parse_status "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == "mapped" ]]
 }
 
 @test "pf_parse_status detects try_again status" {
     local output="External IP not found, try again later"
     run pf_parse_status "$output"
-    [ "$status" -eq 0 ]
-    [[ "$output" == "try_again" ]]
+    [ "$status" -eq 2 ]
 }
 
 @test "pf_parse_status detects error status" {
     local output="Connection failed: timeout"
     run pf_parse_status "$output"
-    [ "$status" -eq 0 ]
-    [[ "$output" == "error" ]]
+    [ "$status" -eq 1 ]
 }
 
 @test "conf_strip_ipv6_allowedips removes ::/0" {
@@ -434,7 +431,74 @@ EOF
 }
 
 @test "pf_request_once with try_again response" {
-    skip "try-again scenario not supported in test env"
+    create_mock_natpmpc
+
+    function qb_set_port() { echo "qB set to $1"; }
+    export -f qb_set_port
+
+    function pf_detect_gateway() { echo "192.168.1.1"; }
+    export -f pf_detect_gateway
+
+    run pf_request_once
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$STATE_DIR/mapped_port.txt")" == "12345" ]]
+}
+
+@test "pf_request_once with error response" {
+    # natpmpc always fails
+    cat > "$TEST_TMPDIR/natpmpc" <<'EOF'
+#!/bin/bash
+echo "Connection failed: timeout"
+exit 1
+EOF
+    chmod +x "$TEST_TMPDIR/natpmpc"
+    export PATH="$TEST_TMPDIR:$PATH"
+
+    function qb_set_port() { echo "qB set to $1"; }
+    export -f qb_set_port
+
+    function pf_detect_gateway() { echo "172.16.0.1"; }
+    export -f pf_detect_gateway
+
+    run pf_request_once
+    [ "$status" -eq 1 ]
+    [[ "$(cat "$STATE_DIR/mapped_port.txt")" == "51820" ]]
+}
+
+@test "pf_verify reports mapped status" {
+    create_mock_natpmpc
+    echo 12345 >"$PORT_FILE"
+
+    function pf_detect_gateway() { echo "10.2.0.1"; }
+    export -f pf_detect_gateway
+
+    run pf_verify
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PF OK on 10.2.0.1 (udp)"* ]]
+}
+
+@test "pf_verify reports try_again status" {
+    create_mock_natpmpc
+    echo 12345 >"$PORT_FILE"
+
+    function pf_detect_gateway() { echo "192.168.1.1"; }
+    export -f pf_detect_gateway
+
+    run pf_verify
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PF TRY AGAIN on 192.168.1.1"* ]]
+}
+
+@test "pf_verify reports error status" {
+    create_mock_natpmpc
+    echo 12345 >"$PORT_FILE"
+
+    function pf_detect_gateway() { echo "172.16.0.1"; }
+    export -f pf_detect_gateway
+
+    run pf_verify
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PF FAILED on 172.16.0.1"* ]]
 }
 
 # ===========================
