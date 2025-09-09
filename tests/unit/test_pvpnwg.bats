@@ -218,6 +218,16 @@ EOF
     [[ "$output" == "10.2.3.1" ]]
 }
 
+@test "pf_derive_gateway_from_conf falls back to PF_GATEWAY_FALLBACK" {
+    cat > "$TARGET_CONF" <<EOF
+[Interface]
+EOF
+    PF_GATEWAY_FALLBACK="10.9.8.7"
+    run pf_derive_gateway_from_conf
+    [ "$status" -eq 0 ]
+    [[ "$output" == "$PF_GATEWAY_FALLBACK" ]]
+}
+
 @test "pf_history_rotate_if_needed truncates file" {
     PF_HISTORY="$TMP_DIR/pf_history.log"
     PF_HISTORY_MAX=100
