@@ -135,7 +135,10 @@ run_as_user() {
   elif command -v sudo >/dev/null 2>&1; then
     sudo -n -u "#$RUN_UID" "$@"
   elif command -v su >/dev/null 2>&1; then
-    su - "#$RUN_UID" -c "$(printf '%q ' "$@")"
+    local target
+    target="$(getent passwd "$RUN_UID" | cut -d: -f1 || true)"
+    target="${target:-$RUN_UID}"
+    su -s /bin/sh "$target" -c "$(printf '%q ' "$@")"
   else
     die "Unable to run command as UID $RUN_UID: missing sudo and su"
   fi

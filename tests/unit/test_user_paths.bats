@@ -74,3 +74,23 @@ run_as() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"Unknown user"* ]]
 }
+
+@test "falls back to su when sudo missing" {
+    user="pvuser4"
+    userdel -r "$user" 2>/dev/null || true
+    useradd -m "$user"
+
+    nosudo="$(mktemp -d)"
+    for cmd in bash su getent install cut id mkdir touch cat dirname chmod tee date sed; do
+        ln -s "$(command -v "$cmd")" "$nosudo/$cmd"
+    done
+
+    run env -i PATH="$nosudo" SUDO_USER="$user" HOME="/root" bash "$SCRIPT" init
+    [ "$status" -eq 0 ]
+    conf="/home/$user/.pvpnwg/pvpnwg.conf"
+    [ -f "$conf" ]
+    [ "$(stat -c '%U' "$conf")" = "$user" ]
+
+    userdel -r "$user"
+    rm -rf "$nosudo"
+}
