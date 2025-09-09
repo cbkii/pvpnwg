@@ -9,7 +9,12 @@ trap restore_natpmpc EXIT
 
 if command -v natpmpc >/dev/null 2>&1; then
   NATPMC_PATH=$(command -v natpmpc)
-  mv "$NATPMC_PATH" "${NATPMC_PATH}.real"
+  if [ -w "$NATPMC_PATH" ]; then
+    mv "$NATPMC_PATH" "${NATPMC_PATH}.real"
+  else
+    echo "Skipping natpmpc relocation: insufficient permissions for $NATPMC_PATH"
+    NATPMC_PATH=""
+  fi
 fi
 
 bats tests/unit
