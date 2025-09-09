@@ -6,34 +6,34 @@ set -euo pipefail
 CLI_USER=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --user=*)
-            CLI_USER="${1#*=}"
-            shift
-            ;;
-        --user)
-            CLI_USER="$2"
-            shift 2
-            ;;
-        *)
-            ARGS+=("$1")
-            shift
-            ;;
-    esac
+  case "$1" in
+  --user=*)
+    CLI_USER="${1#*=}"
+    shift
+    ;;
+  --user)
+    CLI_USER="$2"
+    shift 2
+    ;;
+  *)
+    ARGS+=("$1")
+    shift
+    ;;
+  esac
 done
 set -- "${ARGS[@]}"
 
 RUN_USER=""
 if [[ -n "$CLI_USER" ]]; then
-    RUN_USER="$CLI_USER"
+  RUN_USER="$CLI_USER"
 elif [[ -n "${SUDO_USER:-}" ]]; then
-    RUN_USER="$SUDO_USER"
+  RUN_USER="$SUDO_USER"
 else
-    RUN_USER="$(id -un)"
+  RUN_USER="$(id -un)"
 fi
 if ! getent passwd "$RUN_USER" >/dev/null 2>&1; then
-    echo "Unknown user: $RUN_USER" >&2
-    exit 1
+  echo "Unknown user: $RUN_USER" >&2
+  exit 1
 fi
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 
@@ -53,23 +53,24 @@ NC='\033[0m' # No Color
 NATPMP_MIN_VER="20230423-1.2"
 
 install_natpmpc_unstable() {
-    local MIN_VER="$NATPMP_MIN_VER"
-    local SRC_LIST="/etc/apt/sources.list.d/debian-unstable.list"
-    local PIN_FILE="/etc/apt/preferences.d/pvpn-natpmpc.pref"
-    local DIST="unstable"
-    local SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+  local MIN_VER="$NATPMP_MIN_VER"
+  local SRC_LIST="/etc/apt/sources.list.d/debian-unstable.list"
+  local PIN_FILE="/etc/apt/preferences.d/pvpn-natpmpc.pref"
+  local DIST="unstable"
+  local SUDO=""
+  [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 
-    echo "[info] Preparing apt sources for Debian unstable (scoped to natpmpc only)..."
-    if ! grep -qsE '^\s*deb .*debian.* unstable ' "$SRC_LIST" 2>/dev/null && \
-       ! grep -RqsE '^\s*deb .*debian.* unstable ' /etc/apt/sources.list* 2>/dev/null; then
-        $SUDO tee "$SRC_LIST" >/dev/null <<'EOF'
+  echo "[info] Preparing apt sources for Debian unstable (scoped to natpmpc only)..."
+  if ! grep -qsE '^\s*deb .*debian.* unstable ' "$SRC_LIST" 2>/dev/null &&
+    ! grep -RqsE '^\s*deb .*debian.* unstable ' /etc/apt/sources.list* 2>/dev/null; then
+    $SUDO tee "$SRC_LIST" >/dev/null <<'EOF'
 deb http://deb.debian.org/debian unstable main
 EOF
-    fi
+  fi
 
-    # Pin so only natpmpc (and its lib) are allowed from unstable, respecting existing pins
-    if [ ! -f "$PIN_FILE" ]; then
-        $SUDO tee "$PIN_FILE" >/dev/null <<'EOF'
+  # Pin so only natpmpc (and its lib) are allowed from unstable, respecting existing pins
+  if [ ! -f "$PIN_FILE" ]; then
+    $SUDO tee "$PIN_FILE" >/dev/null <<'EOF'
 Package: *
 Pin: release a=unstable
 Pin-Priority: 100
@@ -78,152 +79,157 @@ Package: natpmpc libnatpmp1t64 libnatpmp1
 Pin: release a=unstable
 Pin-Priority: 501
 EOF
-    else
-        if ! grep -qs 'natpmpc' "$PIN_FILE" || \
-           { ! grep -qs 'libnatpmp1t64' "$PIN_FILE" && ! grep -qs 'libnatpmp1' "$PIN_FILE"; }; then
-            $SUDO tee -a "$PIN_FILE" >/dev/null <<'EOF'
+  else
+    if ! grep -qs 'natpmpc' "$PIN_FILE" ||
+      { ! grep -qs 'libnatpmp1t64' "$PIN_FILE" && ! grep -qs 'libnatpmp1' "$PIN_FILE"; }; then
+      $SUDO tee -a "$PIN_FILE" >/dev/null <<'EOF'
 Package: natpmpc libnatpmp1t64 libnatpmp1
 Pin: release a=unstable
 Pin-Priority: 501
 EOF
-        fi
     fi
+  fi
 
-    echo "[info] apt update..."
-    $SUDO apt-get update -y
+  echo "[info] apt update..."
+  $SUDO apt-get update -y
 
-    local LIBPKG=""
-    if apt-cache policy libnatpmp1t64 2>/dev/null | awk '/Candidate:/ {print $2}' | grep -vq '(none)'; then
-        LIBPKG="libnatpmp1t64"
-    elif apt-cache policy libnatpmp1 2>/dev/null | awk '/Candidate:/ {print $2}' | grep -vq '(none)'; then
-        LIBPKG="libnatpmp1"
-    fi
+  local LIBPKG=""
+  if apt-cache policy libnatpmp1t64 2>/dev/null | awk '/Candidate:/ {print $2}' | grep -vq '(none)'; then
+    LIBPKG="libnatpmp1t64"
+  elif apt-cache policy libnatpmp1 2>/dev/null | awk '/Candidate:/ {print $2}' | grep -vq '(none)'; then
+    LIBPKG="libnatpmp1"
+  fi
 
-    local CUR_VER
-    CUR_VER=$(dpkg-query -W -f='${Version}' natpmpc 2>/dev/null || true)
-    if [ -n "$CUR_VER" ] && dpkg --compare-versions "$CUR_VER" ge "$MIN_VER"; then
-        echo "[ok] natpmpc $CUR_VER already >= $MIN_VER"
+  local CUR_VER
+  CUR_VER=$(dpkg-query -W -f='${Version}' natpmpc 2>/dev/null || true)
+  if [ -n "$CUR_VER" ] && dpkg --compare-versions "$CUR_VER" ge "$MIN_VER"; then
+    echo "[ok] natpmpc $CUR_VER already >= $MIN_VER"
+  else
+    echo "[info] Installing natpmpc from unstable..."
+    if [ -n "$LIBPKG" ]; then
+      $SUDO apt-get install -y -t "$DIST" natpmpc "$LIBPKG"
     else
-        echo "[info] Installing natpmpc from unstable..."
-        if [ -n "$LIBPKG" ]; then
-            $SUDO apt-get install -y -t "$DIST" natpmpc "$LIBPKG"
-        else
-            $SUDO apt-get install -y -t "$DIST" natpmpc
-        fi
+      $SUDO apt-get install -y -t "$DIST" natpmpc
     fi
+  fi
 
-    CUR_VER=$(dpkg-query -W -f='${Version}' natpmpc 2>/dev/null || true)
-    if [ -z "$CUR_VER" ]; then
-        echo "[err] natpmpc not installed"; return 1
-    fi
-    if dpkg --compare-versions "$CUR_VER" ge "$MIN_VER"; then
-        echo "[ok] natpmpc $CUR_VER (>= $MIN_VER)"
-    else
-        echo "[err] natpmpc $CUR_VER is older than required $MIN_VER"; return 2
-    fi
+  CUR_VER=$(dpkg-query -W -f='${Version}' natpmpc 2>/dev/null || true)
+  if [ -z "$CUR_VER" ]; then
+    echo "[err] natpmpc not installed"
+    return 1
+  fi
+  if dpkg --compare-versions "$CUR_VER" ge "$MIN_VER"; then
+    echo "[ok] natpmpc $CUR_VER (>= $MIN_VER)"
+  else
+    echo "[err] natpmpc $CUR_VER is older than required $MIN_VER"
+    return 2
+  fi
 
-    local HELPLINE
-    HELPLINE=$(natpmpc -h 2>&1 | head -1 || true)
-    echo "[info] natpmpc help: $HELPLINE"
+  local HELPLINE
+  HELPLINE=$(natpmpc -h 2>&1 | head -1 || true)
+  echo "[info] natpmpc help: $HELPLINE"
 }
 
 log() { echo -e "${GREEN}[INFO]${NC}" "$@"; }
 warn() { echo -e "${YELLOW}[WARN]${NC}" "$@"; }
 error() { echo -e "${RED}[ERROR]${NC}" "$@"; }
-die() { error "$@"; exit 1; }
+die() {
+  error "$@"
+  exit 1
+}
 
 check_root() {
-    [[ ${EUID} -eq 0 ]] || die "Run as root (sudo)"
+  [[ ${EUID} -eq 0 ]] || die "Run as root (sudo)"
 }
 
 check_deps() {
-    log "Checking dependencies..."
-    local -a req=(ip wg wg-quick curl jq awk sed grep ping natpmpc)
-    local -a opt=(vnstat nft resolvconf dig drill iptables)
-    local missing=()
-    
-    for dep in "${req[@]}"; do
-        if ! command -v "$dep" >/dev/null 2>&1; then
-            missing+=("$dep")
-        fi
-    done
-    
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        error "Missing required dependencies: ${missing[*]}"
-        echo "Install with: apt update && apt install -y wireguard-tools iproute2 curl jq iputils-ping natpmpc"
-        exit 1
+  log "Checking dependencies..."
+  local -a req=(ip wg wg-quick curl jq awk sed grep ping natpmpc)
+  local -a opt=(vnstat nft resolvconf dig drill iptables)
+  local missing=()
+
+  for dep in "${req[@]}"; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+      missing+=("$dep")
     fi
+  done
 
-    log "✓ Required dependencies found"
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    error "Missing required dependencies: ${missing[*]}"
+    echo "Install with: apt update && apt install -y wireguard-tools iproute2 curl jq iputils-ping natpmpc"
+    exit 1
+  fi
 
-    local cur_ver
-    cur_ver=$(dpkg-query -W -f='${Version}' natpmpc 2>/dev/null || true)
-    if ! dpkg --compare-versions "$cur_ver" ge "$NATPMP_MIN_VER"; then
-        error "natpmpc $cur_ver is older than required $NATPMP_MIN_VER"
-        echo "Upgrade with: install_natpmpc_unstable"
-        exit 1
+  log "✓ Required dependencies found"
+
+  local cur_ver
+  cur_ver=$(dpkg-query -W -f='${Version}' natpmpc 2>/dev/null || true)
+  if ! dpkg --compare-versions "$cur_ver" ge "$NATPMP_MIN_VER"; then
+    error "natpmpc $cur_ver is older than required $NATPMP_MIN_VER"
+    echo "Upgrade with: install_natpmpc_unstable"
+    exit 1
+  fi
+
+  for dep in "${opt[@]}"; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+      warn "Optional dependency missing: $dep"
+    else
+      log "✓ Found optional: $dep"
     fi
-
-    for dep in "${opt[@]}"; do
-        if ! command -v "$dep" >/dev/null 2>&1; then
-            warn "Optional dependency missing: $dep"
-        else
-            log "✓ Found optional: $dep"
-        fi
-    done
+  done
 }
 
 check_sudo_config() {
-    log "Ensure passwordless sudo is configured for pvpnwg runtime commands"
+  log "Ensure passwordless sudo is configured for pvpnwg runtime commands"
 
-    if command -v sudo >/dev/null 2>&1; then
-        return
-    fi
+  if command -v sudo >/dev/null 2>&1; then
+    return
+  fi
 
-    if [[ ${EUID} -ne 0 ]]; then
-        die "sudo is required but not installed"
-    fi
+  if [[ ${EUID} -ne 0 ]]; then
+    die "sudo is required but not installed"
+  fi
 
-    if [[ "$RUN_USER" != "root" ]]; then
-        command -v su >/dev/null 2>&1 \
-            || die "sudo not installed and 'su' unavailable to switch to ${RUN_USER}"
-        log "sudo not installed; will fall back to 'su'"
-    fi
+  if [[ "$RUN_USER" != "root" ]]; then
+    command -v su >/dev/null 2>&1 ||
+      die "sudo not installed and 'su' unavailable to switch to ${RUN_USER}"
+    log "sudo not installed; will fall back to 'su'"
+  fi
 }
 
 run_as_user() {
-    local target="$1"
-    shift
+  local target="$1"
+  shift
 
-    if command -v sudo >/dev/null 2>&1; then
-        sudo -n -u "$target" "$@"
-    elif [[ "$(id -un)" == "$target" ]]; then
-        "$@"
-    elif command -v su >/dev/null 2>&1; then
-        su - "$target" -c "$(printf '%q ' "$@")"
-    else
-        die "Unable to run commands as $target: missing sudo and su"
-    fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -n -u "$target" "$@"
+  elif [[ "$(id -un)" == "$target" ]]; then
+    "$@"
+  elif command -v su >/dev/null 2>&1; then
+    su - "$target" -c "$(printf '%q ' "$@")"
+  else
+    die "Unable to run commands as $target: missing sudo and su"
+  fi
 }
 
 install_binary() {
-    log "Installing pvpnwg binary..."
-    
-    [[ -f "$SCRIPT_PATH" ]] || die "Script not found: $SCRIPT_PATH"
-    
-    cp "$SCRIPT_PATH" "${INSTALL_DIR}/${BIN_NAME}"
-    chmod +x "${INSTALL_DIR}/${BIN_NAME}"
-    
-    log "✓ Installed to ${INSTALL_DIR}/${BIN_NAME}"
+  log "Installing pvpnwg binary..."
+
+  [[ -f "$SCRIPT_PATH" ]] || die "Script not found: $SCRIPT_PATH"
+
+  cp "$SCRIPT_PATH" "${INSTALL_DIR}/${BIN_NAME}"
+  chmod +x "${INSTALL_DIR}/${BIN_NAME}"
+
+  log "✓ Installed to ${INSTALL_DIR}/${BIN_NAME}"
 }
 
 create_systemd_units() {
-    log "Creating systemd units..."
+  log "Creating systemd units..."
 
-    command -v systemctl >/dev/null 2>&1 || die "systemctl not found; systemd is required"
+  command -v systemctl >/dev/null 2>&1 || die "systemctl not found; systemd is required"
 
-    # pvpn-check.service
-    cat > "${SYSTEMD_DIR}/pvpn-check.service" <<'EOF'
+  # pvpn-check.service
+  cat >"${SYSTEMD_DIR}/pvpn-check.service" <<'EOF'
 [Unit]
 Description=PVPN Health Check (reconnect if idle/aged/unhealthy)
 After=network-online.target
@@ -240,11 +246,11 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-    chmod 644 "${SYSTEMD_DIR}/pvpn-check.service"
-    chown root:root "${SYSTEMD_DIR}/pvpn-check.service"
+  chmod 644 "${SYSTEMD_DIR}/pvpn-check.service"
+  chown root:root "${SYSTEMD_DIR}/pvpn-check.service"
 
-    # pvpn-check.timer
-    cat > "${SYSTEMD_DIR}/pvpn-check.timer" <<'EOF'
+  # pvpn-check.timer
+  cat >"${SYSTEMD_DIR}/pvpn-check.timer" <<'EOF'
 [Unit]
 Description=Run PVPN Health Check every 5 minutes
 Requires=pvpn-check.service
@@ -259,11 +265,11 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-    chmod 644 "${SYSTEMD_DIR}/pvpn-check.timer"
-    chown root:root "${SYSTEMD_DIR}/pvpn-check.timer"
+  chmod 644 "${SYSTEMD_DIR}/pvpn-check.timer"
+  chown root:root "${SYSTEMD_DIR}/pvpn-check.timer"
 
-    # pvpn-pf.service
-    cat > "${SYSTEMD_DIR}/pvpn-pf.service" <<'EOF'
+  # pvpn-pf.service
+  cat >"${SYSTEMD_DIR}/pvpn-pf.service" <<'EOF'
 [Unit]
 Description=PVPN NAT-PMP Port Forward Renew Loop
 After=network-online.target
@@ -282,11 +288,11 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-    chmod 644 "${SYSTEMD_DIR}/pvpn-pf.service"
-    chown root:root "${SYSTEMD_DIR}/pvpn-pf.service"
+  chmod 644 "${SYSTEMD_DIR}/pvpn-pf.service"
+  chown root:root "${SYSTEMD_DIR}/pvpn-pf.service"
 
-    # pvpn-monitor.service
-    cat > "${SYSTEMD_DIR}/pvpn-monitor.service" <<'EOF'
+  # pvpn-monitor.service
+  cat >"${SYSTEMD_DIR}/pvpn-monitor.service" <<'EOF'
 [Unit]
 Description=PVPN Enhanced Monitor Loop (latency, WG health, DNS)
 After=network-online.target
@@ -305,11 +311,11 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-    chmod 644 "${SYSTEMD_DIR}/pvpn-monitor.service"
-    chown root:root "${SYSTEMD_DIR}/pvpn-monitor.service"
+  chmod 644 "${SYSTEMD_DIR}/pvpn-monitor.service"
+  chown root:root "${SYSTEMD_DIR}/pvpn-monitor.service"
 
-    # pvpn-monitor.timer
-    cat > "${SYSTEMD_DIR}/pvpn-monitor.timer" <<'EOF'
+  # pvpn-monitor.timer
+  cat >"${SYSTEMD_DIR}/pvpn-monitor.timer" <<'EOF'
 [Unit]
 Description=PVPN Monitor Timer (alternative to service)
 Requires=pvpn-monitor.service
@@ -324,95 +330,95 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-    chmod 644 "${SYSTEMD_DIR}/pvpn-monitor.timer"
-    chown root:root "${SYSTEMD_DIR}/pvpn-monitor.timer"
+  chmod 644 "${SYSTEMD_DIR}/pvpn-monitor.timer"
+  chown root:root "${SYSTEMD_DIR}/pvpn-monitor.timer"
 
-    systemctl daemon-reload || die "Failed to reload systemd daemon"
-    log "✓ Created systemd units"
+  systemctl daemon-reload || die "Failed to reload systemd daemon"
+  log "✓ Created systemd units"
 }
 
 setup_user_config() {
-    local user="${RUN_USER:-$(logname 2>/dev/null || echo root)}"
-    local home_dir
-    local home_dir="${RUN_HOME:-$(getent passwd "$user" | cut -d: -f6)}"
-    local phome="${home_dir}/.pvpnwg"
+  local user="${RUN_USER:-$(logname 2>/dev/null || echo root)}"
+  local home_dir
+  local home_dir="${RUN_HOME:-$(getent passwd "$user" | cut -d: -f6)}"
+  local phome="${home_dir}/.pvpnwg"
 
-    log "Setting up user configuration for: $user"
-    log "PHOME will be: $phome"
+  log "Setting up user configuration for: $user"
+  log "PHOME will be: $phome"
 
-    if [[ ! -f "$phome/pvpnwg.conf" ]]; then
-        log "Running init to create default config..."
-        run_as_user "$user" "${INSTALL_DIR}/${BIN_NAME}" init
-    else
-        log "✓ Config already exists at $phome/pvpnwg.conf"
-    fi
+  if [[ ! -f "$phome/pvpnwg.conf" ]]; then
+    log "Running init to create default config..."
+    run_as_user "$user" "${INSTALL_DIR}/${BIN_NAME}" init
+  else
+    log "✓ Config already exists at $phome/pvpnwg.conf"
+  fi
 
-    echo
-    echo "Next steps:"
-    echo "1. Copy your Proton WireGuard .conf files to: $phome/configs/"
-    echo "2. Edit configuration: $phome/pvpnwg.conf"
-    echo "3. Test: pvpnwg validate configs"
-    echo "4. Connect: pvpnwg connect"
-    echo "5. Enable services: systemctl enable --now pvpn-check.timer"
+  echo
+  echo "Next steps:"
+  echo "1. Copy your Proton WireGuard .conf files to: $phome/configs/"
+  echo "2. Edit configuration: $phome/pvpnwg.conf"
+  echo "3. Test: pvpnwg validate configs"
+  echo "4. Connect: pvpnwg connect"
+  echo "5. Enable services: systemctl enable --now pvpn-check.timer"
 }
 
 enable_services() {
-    command -v systemctl >/dev/null 2>&1 || die "systemctl not found; systemd is required"
+  command -v systemctl >/dev/null 2>&1 || die "systemctl not found; systemd is required"
 
-    read -p "Enable automatic health checks? [Y/n] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Nn]$ ]]; then
-        log "Skipping service enablement"
-        return
-    fi
+  read -p "Enable automatic health checks? [Y/n] " -n 1 -r
+  echo
+  if [[ $REPLY =~ ^[Nn]$ ]]; then
+    log "Skipping service enablement"
+    return
+  fi
 
-    log "Enabling pvpn-check.timer..."
-    systemctl enable pvpn-check.timer || die "Failed to enable pvpn-check.timer"
-    systemctl start pvpn-check.timer || die "Failed to start pvpn-check.timer"
-    
-    read -p "Enable port forwarding service? [y/N] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        log "Enabling pvpn-pf.service..."
-        systemctl enable pvpn-pf.service || die "Failed to enable pvpn-pf.service"
-        log "Start with: systemctl start pvpn-pf.service (after connecting VPN)"
-    fi
-    
-    read -p "Enable enhanced monitoring? [y/N] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        log "Note: Choose either service OR timer for monitoring"
-        echo "  Service: systemctl enable --now pvpn-monitor.service"
-        echo "  Timer:   systemctl enable --now pvpn-monitor.timer"
-    fi
+  log "Enabling pvpn-check.timer..."
+  systemctl enable pvpn-check.timer || die "Failed to enable pvpn-check.timer"
+  systemctl start pvpn-check.timer || die "Failed to start pvpn-check.timer"
+
+  read -p "Enable port forwarding service? [y/N] " -n 1 -r
+  echo
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    log "Enabling pvpn-pf.service..."
+    systemctl enable pvpn-pf.service || die "Failed to enable pvpn-pf.service"
+    log "Start with: systemctl start pvpn-pf.service (after connecting VPN)"
+  fi
+
+  read -p "Enable enhanced monitoring? [y/N] " -n 1 -r
+  echo
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    log "Note: Choose either service OR timer for monitoring"
+    echo "  Service: systemctl enable --now pvpn-monitor.service"
+    echo "  Timer:   systemctl enable --now pvpn-monitor.timer"
+  fi
 }
 
 main() {
-    echo "Enhanced ProtonVPN WireGuard CLI Installer"
-    echo "=========================================="
-    
-    check_root
-    check_deps
-    check_sudo_config
-    install_binary
-    create_systemd_units
-    setup_user_config
-    enable_services
-    
-    echo
-    log "Installation complete!"
-    echo
-    echo "Usage examples:"
-    echo "  pvpnwg connect              # Connect to best P2P server"
-    echo "  pvpnwg status               # Show detailed status"
-    echo "  pvpnwg diag all             # Full diagnostics"
-    echo "  pvpnwg pf start             # Start port forwarding loop"
-    echo
-    echo "Systemd management:"
-    echo "  systemctl status pvpn-check.timer"
-    echo "  journalctl -u pvpn-check.service -f"
-    echo
-    echo "Documentation: see README.md"
+  echo "Enhanced ProtonVPN WireGuard CLI Installer"
+  echo "=========================================="
+
+  check_root
+  check_deps
+  check_sudo_config
+  install_binary
+  create_systemd_units
+  setup_user_config
+  enable_services
+
+  echo
+  log "Installation complete!"
+  echo
+  echo "Usage examples:"
+  echo "  pvpnwg connect              # Connect to best P2P server"
+  echo "  pvpnwg status               # Show detailed status"
+  echo "  pvpnwg diag all             # Full diagnostics"
+  echo "  pvpnwg pf start             # Start port forwarding loop"
+  echo
+  echo "Systemd management:"
+  echo "  systemctl status pvpn-check.timer"
+  echo "  journalctl -u pvpn-check.service -f"
+  echo
+  echo "Documentation: see README.md"
 }
 
 main "$@"
