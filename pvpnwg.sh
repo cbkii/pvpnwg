@@ -869,10 +869,10 @@ pf_history_rotate_if_needed() {
   (( size < PF_HISTORY_MAX )) && return 0
   local i
   for i in $(seq $((PF_HISTORY_KEEP-1)) -1 1); do
-    [[ -f "${PF_HISTORY}.$i" ]] && mv "${PF_HISTORY}.$i" "${PF_HISTORY}.$((i+1))"
+    [[ -f "${PF_HISTORY}.$i" ]] && mv "${PF_HISTORY}.$i" "${PF_HISTORY}.$((i+1))" || true
   done
-  mv "$PF_HISTORY" "${PF_HISTORY}.1"
-  : >"$PF_HISTORY"
+  mv "$PF_HISTORY" "${PF_HISTORY}.1" || true
+  : >"$PF_HISTORY" || true
 }
 
 pf_record() {
@@ -882,8 +882,8 @@ pf_record() {
   pub="$2"
   gw="$3"
   st="$4"
-  pf_history_rotate_if_needed
-  echo -e "$ts\t$pvt\t$pub\t$gw\t$st" >>"$PF_HISTORY"
+  pf_history_rotate_if_needed || true
+  echo -e "$ts\t$pvt\t$pub\t$gw\t$st" >>"$PF_HISTORY" || true
 }
 
 pf_check_jitter() {
@@ -892,9 +892,9 @@ pf_check_jitter() {
 
   # Track consecutive different ports
   local jitter_count=0
-  [[ -s "$PF_JITTER_FILE" ]] && jitter_count=$(cat "$PF_JITTER_FILE")
+  [[ -s "$PF_JITTER_FILE" ]] && jitter_count=$(cat "$PF_JITTER_FILE" 2>/dev/null || echo 0)
   jitter_count=$((jitter_count + 1))
-  echo "$jitter_count" >"$PF_JITTER_FILE"
+  echo "$jitter_count" >"$PF_JITTER_FILE" || true
 
   if [[ $jitter_count -ge 3 ]]; then
     log "WARN: PF port jitter detected ($jitter_count consecutive changes)"
@@ -905,95 +905,84 @@ pf_check_jitter() {
 
 pf_request_once() {
   local gw lease prev proto out st new_port="" ok_count=0 need_count saw_try_again=false
+  local try_pub try_prv mode gw_tried port udp_port tcp_port
   gw="$(pf_detect_gateway)"
   lease=60
   prev="$(cat "$PORT_FILE" 2>/dev/null || true)"
   need_count=${#PF_PROTO_LIST[@]}
   [[ "$PF_REQUIRE_BOTH" == false ]] && need_count=1
 
-  for proto in "${PF_PROTO_LIST[@]}"; do
-    if [[ -n "$prev" ]]; then
-      out=$(natpmpc -g "$gw" -a "$prev" "$prev" "$proto" "$lease" 2>&1 || true)
-    else
-      out=$(natpmpc -g "$gw" -a 1 0 "$proto" "$lease" 2>&1 || true)
-    fi
-    if pf_parse_status "$out"; then
-      st=0
-    else
-      st=$?
-    fi
-    vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
-    if (( st == 0 )); then
-      [[ -z "$new_port" ]] && new_port=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
-      ((ok_count++))
-    elif (( st == 2 )); then
-      saw_try_again=true
-    fi
-  done
-
-  if (( ok_count >= need_count )) && [[ -n "$new_port" ]]; then
-    if pf_check_jitter "$new_port" "$prev"; then echo 0 >"$PF_JITTER_FILE"; fi
-    if [[ "$new_port" != "$prev" ]]; then
-      if qb_set_port "$new_port"; then
-        echo "$new_port" >"$PORT_FILE"
-        mkdir -p "$(dirname "$PROTON_FWD_FILE")" /tmp/gluetun
-        echo "$new_port" >"$PROTON_FWD_FILE"
-        echo "$new_port" >"$GLUETUN_FWD_FILE"
-        log "PF mapped: port=$new_port gw=$gw (updated)"
-      else
-        log "WARN: qB sync to PF port $new_port failed"
-      fi
-    else
-      log "PF mapped unchanged: port=$new_port"
-    fi
-    pf_record "$new_port" "$new_port" "$gw" ok
-    return 0
+  local modes=()
+  if [[ -n "$prev" ]]; then
+    modes+=("renew" "any" "mirror")
+  else
+    modes+=("any" "mirror")
   fi
 
-  if [[ "$gw" != "$PF_GATEWAY_FALLBACK" ]]; then
-    vlog "PF: retrying with static gateway $PF_GATEWAY_FALLBACK"
-    gw="$PF_GATEWAY_FALLBACK"
-    ok_count=0; new_port=""; saw_try_again=false
-    for proto in "${PF_PROTO_LIST[@]}"; do
-      if [[ -n "$prev" ]]; then
-        out=$(natpmpc -g "$gw" -a "$prev" "$prev" "$proto" "$lease" 2>&1 || true)
-      else
-        out=$(natpmpc -g "$gw" -a 1 0 "$proto" "$lease" 2>&1 || true)
-      fi
-      if pf_parse_status "$out"; then
-        st=0
-      else
-        st=$?
-      fi
-      vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
-      if (( st == 0 )); then
-        [[ -z "$new_port" ]] && new_port=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
-        ((ok_count++))
-      elif (( st == 2 )); then
-        saw_try_again=true
+  for gw_tried in "$gw" "$PF_GATEWAY_FALLBACK"; do
+    [[ -z "$gw_tried" ]] && continue
+    [[ "$gw_tried" != "$gw" ]] && vlog "PF: retrying with static gateway $PF_GATEWAY_FALLBACK"
+
+    for mode in "${modes[@]}"; do
+      ok_count=0; saw_try_again=false; udp_port=""; tcp_port=""; new_port=""
+
+      for proto in "${PF_PROTO_LIST[@]}"; do
+        case "$mode" in
+          renew)
+            try_pub="$prev"; try_prv="$prev" ;;
+          any)
+            try_pub=1; try_prv=0 ;;
+          mirror)
+            try_pub=0; try_prv=0 ;;
+        esac
+
+        out=$(natpmpc -g "$gw_tried" -a "$try_pub" "$try_prv" "$proto" "$lease" 2>&1 || true)
+        if pf_parse_status "$out"; then st=0; else st=$?; fi
+        vlog "natpmpc($proto gw=$gw_tried mode=$mode) => ${out//$'\n'/ }"
+
+        if (( st == 0 )); then
+          port=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
+          [[ "$proto" == udp ]] && udp_port="$port"
+          [[ "$proto" == tcp ]] && tcp_port="$port"
+          ((ok_count++))
+        elif (( st == 2 )); then
+          saw_try_again=true
+        fi
+      done
+
+      if (( ok_count >= need_count )); then
+        if [[ "$PF_REQUIRE_BOTH" == true && -n "$udp_port" && -n "$tcp_port" && "$udp_port" != "$tcp_port" ]]; then
+          log "WARN: PF mapped different UDP ($udp_port) and TCP ($tcp_port) ports"
+        fi
+        if [[ -n "$udp_port" ]]; then
+          new_port="$udp_port"
+        elif [[ -n "$tcp_port" ]]; then
+          new_port="$tcp_port"
+        fi
+
+        if [[ -n "$new_port" ]]; then
+          if pf_check_jitter "$new_port" "$prev"; then echo 0 >"$PF_JITTER_FILE" || true; fi
+          if [[ "$new_port" != "$prev" ]]; then
+            if qb_set_port "$new_port"; then
+              echo "$new_port" >"$PORT_FILE" || true
+              mkdir -p "$(dirname "$PROTON_FWD_FILE")" /tmp/gluetun || true
+              echo "$new_port" >"$PROTON_FWD_FILE" || true
+              echo "$new_port" >"$GLUETUN_FWD_FILE" || true
+              log "PF mapped: port=$new_port gw=$gw_tried (updated via $mode)"
+            else
+              log "WARN: qB sync to PF port $new_port failed"
+            fi
+          else
+            log "PF mapped unchanged: port=$new_port"
+          fi
+          pf_record "$new_port" "$new_port" "$gw_tried" ok || true
+          return 0
+        fi
       fi
     done
-    if (( ok_count >= need_count )) && [[ -n "$new_port" ]]; then
-      if pf_check_jitter "$new_port" "$prev"; then echo 0 >"$PF_JITTER_FILE"; fi
-      if [[ "$new_port" != "$prev" ]]; then
-        if qb_set_port "$new_port"; then
-          echo "$new_port" >"$PORT_FILE"
-          mkdir -p "$(dirname "$PROTON_FWD_FILE")" /tmp/gluetun
-          echo "$new_port" >"$PROTON_FWD_FILE"
-          echo "$new_port" >"$GLUETUN_FWD_FILE"
-          log "PF mapped: port=$new_port gw=$gw (updated)"
-        else
-          log "WARN: qB sync to PF port $new_port failed"
-        fi
-      else
-        log "PF mapped unchanged: port=$new_port"
-      fi
-      pf_record "$new_port" "$new_port" "$gw" ok
-      return 0
-    fi
-  fi
+  done
 
-  pf_record "${prev:-0}" 0 "$gw" "$($saw_try_again && echo try_again || echo error)"
+  pf_record "${prev:-0}" 0 "$gw" "$($saw_try_again && echo try_again || echo error)" || true
   if $saw_try_again; then
     log "WARN: NAT-PMP TRY AGAIN on $gw (server may not support PF)"
   else
@@ -1001,7 +990,7 @@ pf_request_once() {
   fi
   if [[ -z "$prev" ]]; then
     log "No previous PF port; setting static fallback $PF_STATIC_FALLBACK_PORT"
-    echo "$PF_STATIC_FALLBACK_PORT" >"$PORT_FILE"
+    echo "$PF_STATIC_FALLBACK_PORT" >"$PORT_FILE" || true
     qb_set_port "$PF_STATIC_FALLBACK_PORT" || true
   else
     log "Keeping existing qB/port=$prev until next successful mapping"
