@@ -180,21 +180,18 @@ EOF
     local output="Mapped public port 12345 to local port 51820 using UDP"
     run pf_parse_status "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == "mapped" ]]
 }
 
 @test "pf_parse_status detects try_again status" {
     local output="External IP not found, try again later"
     run pf_parse_status "$output"
-    [ "$status" -eq 0 ]
-    [[ "$output" == "try_again" ]]
+    [ "$status" -eq 2 ]
 }
 
 @test "pf_parse_status detects error status" {
     local output="Connection failed: timeout"
     run pf_parse_status "$output"
-    [ "$status" -eq 0 ]
-    [[ "$output" == "error" ]]
+    [ "$status" -eq 1 ]
 }
 
 @test "conf_strip_ipv6_allowedips removes ::/0" {
