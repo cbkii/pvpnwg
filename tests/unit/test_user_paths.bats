@@ -3,6 +3,25 @@
 
 SCRIPT="$BATS_TEST_DIRNAME/../../pvpnwg.sh"
 
+setup() {
+    export PATH="$BATS_TEST_DIRNAME/../mock/bin:$PATH"
+}
+
+run_as() {
+    local user="$1"
+    shift
+    if command -v sudo >/dev/null 2>&1; then
+        sudo -n -u "$user" "$@"
+    elif command -v su >/dev/null 2>&1; then
+        su - "$user" -c "$(printf '%q ' "$@")"
+    elif [[ "$(id -un)" == "$user" ]]; then
+        "$@"
+    else
+        echo "missing sudo and su" >&2
+        return 127
+    fi
+}
+
 @test "SUDO_USER determines run user and ownership" {
     user="pvuser1"
     userdel -r "$user" 2>/dev/null || true
@@ -34,10 +53,13 @@ SCRIPT="$BATS_TEST_DIRNAME/../../pvpnwg.sh"
 }
 
 @test "init run as non-root creates user-owned files" {
+    if ! command -v sudo >/dev/null 2>&1 && ! command -v su >/dev/null 2>&1; then
+        skip "requires sudo or su"
+    fi
     user="pvuser3"
     userdel -r "$user" 2>/dev/null || true
     useradd -m "$user"
-    run sudo -u "$user" bash "$SCRIPT" init
+    run run_as "$user" bash "$SCRIPT" init
     [ "$status" -eq 0 ]
     conf="/home/$user/.pvpnwg/pvpnwg.conf"
     [ -f "$conf" ]
@@ -51,4 +73,24 @@ SCRIPT="$BATS_TEST_DIRNAME/../../pvpnwg.sh"
     run env -i PATH="$PATH" HOME="/root" bash "$SCRIPT" --user "$user" init
     [ "$status" -ne 0 ]
     [[ "$output" == *"Unknown user"* ]]
+}
+
+@test "falls back to su when sudo missing" {
+    user="pvuser4"
+    userdel -r "$user" 2>/dev/null || true
+    useradd -m "$user"
+
+    nosudo="$(mktemp -d)"
+    for cmd in bash su getent install cut id mkdir touch cat dirname chmod tee date sed; do
+        ln -s "$(command -v "$cmd")" "$nosudo/$cmd"
+    done
+
+    run env -i PATH="$nosudo" SUDO_USER="$user" HOME="/root" bash "$SCRIPT" init
+    [ "$status" -eq 0 ]
+    conf="/home/$user/.pvpnwg/pvpnwg.conf"
+    [ -f "$conf" ]
+    [ "$(stat -c '%U' "$conf")" = "$user" ]
+
+    userdel -r "$user"
+    rm -rf "$nosudo"
 }

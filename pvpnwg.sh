@@ -19,11 +19,23 @@ IFS=$'\n\t'
 
 # Pre-parse for --user flag to set target user early
 CLI_USER=""
-for arg in "$@"; do
-  case "$arg" in
-    --user=*) CLI_USER="${arg#*=}" ;;
+orig_args=("$@")
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --user=*)
+      CLI_USER="${1#*=}"
+      shift
+      ;;
+    --user)
+      CLI_USER="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
   esac
 done
+set -- "${orig_args[@]}"
 
 # ===========================
 # Defaults (derive from invoking user)
@@ -42,6 +54,10 @@ else
     exit 1
   fi
   RUN_USER="$cur"
+fi
+if ! getent passwd "$RUN_USER" >/dev/null 2>&1; then
+  printf 'Unknown user: %s\n' "$RUN_USER" >&2
+  exit 1
 fi
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 RUN_HOME="${RUN_HOME:-$HOME}"
@@ -117,8 +133,15 @@ if [[ -n "${PF_PROTO_LIST:-}" ]]; then IFS=', ' read -r -a PF_PROTO_LIST <<<"${P
 run_as_user() {
   if [[ $EUID -eq "$RUN_UID" ]]; then
     "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo -n -u "#$RUN_UID" "$@"
+  elif command -v su >/dev/null 2>&1; then
+    local target
+    target="$(getent passwd "$RUN_UID" | cut -d: -f1 || true)"
+    target="${target:-$RUN_UID}"
+    su -s /bin/sh "$target" -c "$(printf '%q ' "$@")"
   else
-    sudo -u "#$RUN_UID" "$@"
+    die "Unable to run command as UID $RUN_UID: missing sudo and su"
   fi
 }
 
@@ -1657,6 +1680,10 @@ parse_globals() {
       --user=*)
         CLI_USER="${1#*=}"
         shift
+        ;;
+      --user)
+        CLI_USER="$2"
+        shift 2
         ;;
       --pf-proto=*)
         IFS=',' read -r -a PF_PROTO_LIST <<<"${1#*=}"
