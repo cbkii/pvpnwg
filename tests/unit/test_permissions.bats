@@ -75,6 +75,20 @@ teardown() {
     [ ! -e "/root/.pvpnwg" ]
 }
 
+@test "PVPNWG_USER overrides SUDO_USER when flag omitted" {
+    homeA="$TEST_TMPDIR/homeA"
+    homeB="$TEST_TMPDIR/homeB"
+    useradd -m -d "$homeA" testA
+    useradd -m -d "$homeB" testB
+    rm -rf /root/.pvpnwg "$homeA/.pvpnwg" "$homeB/.pvpnwg"
+    run bash -c "SUDO_USER=testA PVPNWG_USER=testB PVPNWG_NO_MAIN=1 source '$SCRIPT'"
+    [ "$status" -eq 0 ]
+    [ -d "$homeB/.pvpnwg" ]
+    [ ! -e "$homeA/.pvpnwg" ]
+    owner=$(stat -c %U "$homeB/.pvpnwg")
+    [ "$owner" = "testB" ]
+}
+
 @test "init works unprivileged but status requires root" {
     homeC="$TEST_TMPDIR/homeC"
     useradd -m -d "$homeC" testC
