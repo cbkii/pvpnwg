@@ -51,10 +51,8 @@ if [[ -z "$RUN_USER" ]]; then
     RUN_USER="$(id -un 2>/dev/null || echo root)"
   fi
 fi
-RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
-RUN_HOME="${RUN_HOME:-$HOME}"
-RUN_UID="$(id -u "$RUN_USER" 2>/dev/null || echo 0)"
-RUN_GID="$(id -g "$RUN_USER" 2>/dev/null || echo 0)"
+user_entry=$(getent passwd "$RUN_USER") || { echo "Unknown user: $RUN_USER" >&2; exit 1; }
+IFS=: read -r _ _ RUN_UID RUN_GID _ RUN_HOME _ <<<"$user_entry"
 
 PHOME_DEFAULT="${RUN_HOME}/.pvpnwg"
 CONFIG_DIR_DEFAULT="${PHOME_DEFAULT}/configs"

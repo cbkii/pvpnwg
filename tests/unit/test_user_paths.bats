@@ -44,3 +44,11 @@ SCRIPT="$BATS_TEST_DIRNAME/../../pvpnwg.sh"
     [ "$(stat -c '%U' "$conf")" = "$user" ]
     userdel -r "$user"
 }
+
+@test "--user rejects unknown user" {
+    user="pvnoexist"
+    userdel -r "$user" 2>/dev/null || true
+    run env -i PATH="$PATH" HOME="/root" bash "$SCRIPT" --user "$user" init
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Unknown user"* ]]
+}
