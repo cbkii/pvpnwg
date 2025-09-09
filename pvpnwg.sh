@@ -73,7 +73,6 @@ WEBUI_URL_DEFAULT="http://192.168.1.50:8080"
 WEBUI_USER_DEFAULT="admin"
 WEBUI_PASS_DEFAULT="change_me"
 QB_CONF_PATH_DEFAULT="${RUN_HOME}/.config/qBittorrent/qBittorrent.conf"
-
 PF_GATEWAY_FALLBACK_DEFAULT="10.2.0.1"
 PF_RENEW_SECS_DEFAULT=45
 PF_STATIC_FALLBACK_PORT_DEFAULT=51820
@@ -266,10 +265,37 @@ dns_backup() {
   detect_dns_backend
   case "$dns_backend" in systemd-resolved | flat) _dns_tar /etc/resolv.conf ;; resolvconf) _dns_tar /etc/resolvconf /etc/resolv.conf ;; esac
 }
+dns_restore_generic() {
+  detect_dns_backend
+  case "$dns_backend" in
+    systemd-resolved)
+      _run resolvectl revert "$IFACE" || true ;;
+    resolvconf)
+      _run resolvconf -u || true ;;
+    *)
+      : >"$TMP_DIR/resolv.conf.generic"
+      printf '%s\n' "nameserver 1.1.1.1" "nameserver 8.8.8.8" >>"$TMP_DIR/resolv.conf.generic"
+      _run cp -f "$TMP_DIR/resolv.conf.generic" /etc/resolv.conf || true ;;
+  esac
+  log "DNS restored generically"
+}
 dns_restore() {
   if [[ -f "$DNS_BACKUP" ]]; then
-    _run tar -xpf "$DNS_BACKUP" -C /
-    log "DNS restored from backup"
+    if tar -tf "$DNS_BACKUP" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null; then
+      log "Unsafe paths in DNS backup; using generic restore"
+      dns_restore_generic
+      return
+    fi
+    local tmp
+    tmp=$(mktemp -d)
+    if _run tar -xpf "$DNS_BACKUP" -C "$tmp"; then
+      _run cp -a "$tmp/." /
+      log "DNS restored from backup"
+    else
+      log "DNS backup extraction failed; using generic restore"
+      dns_restore_generic
+    fi
+    rm -rf "$tmp"
   else
     vlog "No DNS backup"
   fi
