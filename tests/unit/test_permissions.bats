@@ -41,11 +41,13 @@ MOCK
 }
 
 teardown() {
-    for u in testA testB testC; do
-        id "$u" >/dev/null 2>&1 && userdel -r "$u" 2>/dev/null || true
-    done
+    if [[ ${EUID} -eq 0 ]]; then
+        for u in testA testB testC; do
+            id "$u" >/dev/null 2>&1 && userdel -r "$u" 2>/dev/null || true
+        done
+        rm -rf /root/.pvpnwg
+    fi
     rm -rf "$TEST_TMPDIR"
-    rm -rf /root/.pvpnwg
 }
 
 @test "--user overrides SUDO_USER and creates owned paths" {
