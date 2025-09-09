@@ -75,7 +75,35 @@ check_deps() {
 
 check_sudo_config() {
     log "Ensure passwordless sudo is configured for pvpnwg runtime commands"
-    command -v sudo >/dev/null 2>&1 || warn "sudo not installed"
+
+    if command -v sudo >/dev/null 2>&1; then
+        return
+    fi
+
+    if [[ ${EUID} -ne 0 ]]; then
+        die "sudo is required but not installed"
+    fi
+
+    if [[ "$RUN_USER" != "root" ]]; then
+        command -v su >/dev/null 2>&1 \
+            || die "sudo not installed and 'su' unavailable to switch to ${RUN_USER}"
+        log "sudo not installed; will fall back to 'su'"
+    fi
+}
+
+run_as_user() {
+    local target="$1"
+    shift
+
+    if command -v sudo >/dev/null 2>&1; then
+        sudo -n -u "$target" "$@"
+    elif [[ "$(id -un)" == "$target" ]]; then
+        "$@"
+    elif command -v su >/dev/null 2>&1; then
+        su - "$target" -c "$(printf '%q ' "$@")"
+    else
+        die "Unable to run commands as $target: missing sudo and su"
+    fi
 }
 
 install_binary() {
@@ -197,7 +225,7 @@ setup_user_config() {
 
     if [[ ! -f "$phome/pvpnwg.conf" ]]; then
         log "Running init to create default config..."
-        sudo -u "$user" "${INSTALL_DIR}/${BIN_NAME}" init
+        run_as_user "$user" "${INSTALL_DIR}/${BIN_NAME}" init
     else
         log "✓ Config already exists at $phome/pvpnwg.conf"
     fi

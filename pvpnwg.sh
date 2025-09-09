@@ -116,8 +116,12 @@ if [[ -n "${PF_PROTO_LIST:-}" ]]; then IFS=', ' read -r -a PF_PROTO_LIST <<<"${P
 run_as_user() {
   if [[ $EUID -eq "$RUN_UID" ]]; then
     "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo -n -u "#$RUN_UID" "$@"
+  elif command -v su >/dev/null 2>&1; then
+    su - "#$RUN_UID" -c "$(printf '%q ' "$@")"
   else
-    sudo -u "#$RUN_UID" "$@"
+    die "Unable to run command as UID $RUN_UID: missing sudo and su"
   fi
 }
 

@@ -3,6 +3,21 @@
 
 SCRIPT="$BATS_TEST_DIRNAME/../../pvpnwg.sh"
 
+run_as() {
+    local user="$1"
+    shift
+    if command -v sudo >/dev/null 2>&1; then
+        sudo -n -u "$user" "$@"
+    elif command -v su >/dev/null 2>&1; then
+        su - "$user" -c "$(printf '%q ' "$@")"
+    elif [[ "$(id -un)" == "$user" ]]; then
+        "$@"
+    else
+        echo "missing sudo and su" >&2
+        return 127
+    fi
+}
+
 @test "SUDO_USER determines run user and ownership" {
     user="pvuser1"
     userdel -r "$user" 2>/dev/null || true
@@ -34,10 +49,13 @@ SCRIPT="$BATS_TEST_DIRNAME/../../pvpnwg.sh"
 }
 
 @test "init run as non-root creates user-owned files" {
+    if ! command -v sudo >/dev/null 2>&1 && ! command -v su >/dev/null 2>&1; then
+        skip "requires sudo or su"
+    fi
     user="pvuser3"
     userdel -r "$user" 2>/dev/null || true
     useradd -m "$user"
-    run sudo -u "$user" bash "$SCRIPT" init
+    run run_as "$user" bash "$SCRIPT" init
     [ "$status" -eq 0 ]
     conf="/home/$user/.pvpnwg/pvpnwg.conf"
     [ -f "$conf" ]
