@@ -49,6 +49,84 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Minimum natpmpc version known to work
+NATPMP_MIN_VER="20230423-1.2"
+
+install_natpmpc_unstable() {
+    local MIN_VER="$NATPMP_MIN_VER"
+    local SRC_LIST="/etc/apt/sources.list.d/debian-unstable.list"
+    local PIN_FILE="/etc/apt/preferences.d/pvpn-natpmpc.pref"
+    local DIST="unstable"
+    local SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+
+    echo "[info] Preparing apt sources for Debian unstable (scoped to natpmpc only)..."
+    if ! grep -qsE '^\s*deb .*debian.* unstable ' "$SRC_LIST" 2>/dev/null && \
+       ! grep -RqsE '^\s*deb .*debian.* unstable ' /etc/apt/sources.list* 2>/dev/null; then
+        $SUDO tee "$SRC_LIST" >/dev/null <<'EOF'
+deb http://deb.debian.org/debian unstable main
+EOF
+    fi
+
+    # Pin so only natpmpc (and its lib) are allowed from unstable, respecting existing pins
+    if [ ! -f "$PIN_FILE" ]; then
+        $SUDO tee "$PIN_FILE" >/dev/null <<'EOF'
+Package: *
+Pin: release a=unstable
+Pin-Priority: 100
+
+Package: natpmpc libnatpmp1t64 libnatpmp1
+Pin: release a=unstable
+Pin-Priority: 501
+EOF
+    else
+        if ! grep -qs 'natpmpc' "$PIN_FILE" || \
+           { ! grep -qs 'libnatpmp1t64' "$PIN_FILE" && ! grep -qs 'libnatpmp1' "$PIN_FILE"; }; then
+            $SUDO tee -a "$PIN_FILE" >/dev/null <<'EOF'
+Package: natpmpc libnatpmp1t64 libnatpmp1
+Pin: release a=unstable
+Pin-Priority: 501
+EOF
+        fi
+    fi
+
+    echo "[info] apt update..."
+    $SUDO apt-get update -y
+
+    local LIBPKG=""
+    if apt-cache policy libnatpmp1t64 2>/dev/null | awk '/Candidate:/ {print $2}' | grep -vq '(none)'; then
+        LIBPKG="libnatpmp1t64"
+    elif apt-cache policy libnatpmp1 2>/dev/null | awk '/Candidate:/ {print $2}' | grep -vq '(none)'; then
+        LIBPKG="libnatpmp1"
+    fi
+
+    local CUR_VER
+    CUR_VER=$(dpkg-query -W -f='${Version}' natpmpc 2>/dev/null || true)
+    if [ -n "$CUR_VER" ] && dpkg --compare-versions "$CUR_VER" ge "$MIN_VER"; then
+        echo "[ok] natpmpc $CUR_VER already >= $MIN_VER"
+    else
+        echo "[info] Installing natpmpc from unstable..."
+        if [ -n "$LIBPKG" ]; then
+            $SUDO apt-get install -y -t "$DIST" natpmpc "$LIBPKG"
+        else
+            $SUDO apt-get install -y -t "$DIST" natpmpc
+        fi
+    fi
+
+    CUR_VER=$(dpkg-query -W -f='${Version}' natpmpc 2>/dev/null || true)
+    if [ -z "$CUR_VER" ]; then
+        echo "[err] natpmpc not installed"; return 1
+    fi
+    if dpkg --compare-versions "$CUR_VER" ge "$MIN_VER"; then
+        echo "[ok] natpmpc $CUR_VER (>= $MIN_VER)"
+    else
+        echo "[err] natpmpc $CUR_VER is older than required $MIN_VER"; return 2
+    fi
+
+    local HELPLINE
+    HELPLINE=$(natpmpc -h 2>&1 | head -1 || true)
+    echo "[info] natpmpc help: $HELPLINE"
+}
+
 log() { echo -e "${GREEN}[INFO]${NC}" "$@"; }
 warn() { echo -e "${YELLOW}[WARN]${NC}" "$@"; }
 error() { echo -e "${RED}[ERROR]${NC}" "$@"; }
@@ -60,8 +138,8 @@ check_root() {
 
 check_deps() {
     log "Checking dependencies..."
-    local -a req=(ip wg wg-quick curl jq awk sed grep ping)
-    local -a opt=(natpmpc vnstat nft resolvconf dig drill iptables)
+    local -a req=(ip wg wg-quick curl jq awk sed grep ping natpmpc)
+    local -a opt=(vnstat nft resolvconf dig drill iptables)
     local missing=()
     
     for dep in "${req[@]}"; do
@@ -72,12 +150,20 @@ check_deps() {
     
     if [[ ${#missing[@]} -gt 0 ]]; then
         error "Missing required dependencies: ${missing[*]}"
-        echo "Install with: apt update && apt install -y wireguard-tools iproute2 curl jq iputils-ping"
+        echo "Install with: apt update && apt install -y wireguard-tools iproute2 curl jq iputils-ping natpmpc"
         exit 1
     fi
-    
+
     log "✓ Required dependencies found"
-    
+
+    local cur_ver
+    cur_ver=$(dpkg-query -W -f='${Version}' natpmpc 2>/dev/null || true)
+    if ! dpkg --compare-versions "$cur_ver" ge "$NATPMP_MIN_VER"; then
+        error "natpmpc $cur_ver is older than required $NATPMP_MIN_VER"
+        echo "Upgrade with: install_natpmpc_unstable"
+        exit 1
+    fi
+
     for dep in "${opt[@]}"; do
         if ! command -v "$dep" >/dev/null 2>&1; then
             warn "Optional dependency missing: $dep"
