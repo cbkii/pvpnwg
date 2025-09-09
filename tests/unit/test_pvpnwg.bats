@@ -12,17 +12,29 @@ setup() {
     export CONFIG_DIR="$PHOME/configs"
     export STATE_DIR="$PHOME/state"
     export TMP_DIR="$PHOME/tmp"
+    export TARGET_CONF="$PHOME/target.conf"
     export VERBOSE=0
     export DRY_RUN=1
-    
+    export PVPNWG_USER="$(id -un)"
+
     mkdir -p "$PHOME" "$CONFIG_DIR" "$STATE_DIR" "$TMP_DIR"
-    
+
     # Source the script functions (skip main execution)
     source ./pvpnwg.sh 2>/dev/null || true
 }
 
 teardown() {
     rm -rf "$TEST_TMPDIR"
+}
+
+# ===========================
+# User inference tests
+# ===========================
+
+@test "--user flag required when run as root without inferable user" {
+    run bash -c 'unset SUDO_USER PVPNWG_USER; bash pvpnwg.sh >/dev/null'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--user"* ]]
 }
 
 # ===========================
@@ -183,6 +195,37 @@ EOF
     run pf_parse_status "$output"
     [ "$status" -eq 0 ]
     [[ "$output" == "error" ]]
+}
+
+@test "conf_strip_ipv6_allowedips removes ::/0" {
+    cat > "$TARGET_CONF" <<EOF
+[Peer]
+AllowedIPs = 0.0.0.0/0, ::/0
+EOF
+    conf_strip_ipv6_allowedips
+    run grep -c '::/0' "$TARGET_CONF"
+    [ "$status" -eq 1 ]
+}
+
+@test "pf_derive_gateway_from_conf prefers DNS" {
+    cat > "$TARGET_CONF" <<EOF
+[Interface]
+Address = 10.2.3.4/32
+DNS = 10.2.3.1,8.8.8.8
+EOF
+    run pf_derive_gateway_from_conf
+    [ "$status" -eq 0 ]
+    [[ "$output" == "10.2.3.1" ]]
+}
+
+@test "pf_history_rotate_if_needed truncates file" {
+    PF_HISTORY="$TMP_DIR/pf_history.log"
+    PF_HISTORY_MAX=100
+    PF_HISTORY_KEEP=2
+    printf '%101s' "" | tr ' ' a >"$PF_HISTORY"
+    pf_history_rotate_if_needed
+    [ -f "$PF_HISTORY" ]
+    [ -f "$PF_HISTORY.1" ]
 }
 
 # ===========================
@@ -418,6 +461,8 @@ EOF
       # shellcheck disable=SC2317
       function ping() { printf '%s\n' "PING 1.2.3.4: 56 data bytes" "64 bytes from 1.2.3.4: time=50.0 ms"; }
       export -f ping
+      function getent() { return 1; }
+      export -f getent
     
     run select_conf "any"
     [ "$status" -eq 0 ]
