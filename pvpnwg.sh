@@ -804,9 +804,13 @@ pf_detect_gateway() {
 
 pf_parse_status() {
   local out="$1"
-  echo "$out" | grep -qi 'Mapped public port' && return 0
-  echo "$out" | grep -qi 'try again' && return 2
-  return 1
+  if grep -qi 'Mapped public port' <<<"$out"; then
+    return 0
+  elif grep -qi 'try again' <<<"$out"; then
+    return 2
+  else
+    return 1
+  fi
 }
 
 pf_history_rotate_if_needed() {
@@ -863,8 +867,11 @@ pf_request_once() {
     else
       out=$(natpmpc -g "$gw" -a 1 0 "$proto" "$lease" 2>&1 || true)
     fi
-    st=0
-    pf_parse_status "$out" || st=$?
+    if pf_parse_status "$out"; then
+      st=0
+    else
+      st=$?
+    fi
     vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
     if (( st == 0 )); then
       [[ -z "$new_port" ]] && new_port=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
@@ -903,8 +910,11 @@ pf_request_once() {
       else
         out=$(natpmpc -g "$gw" -a 1 0 "$proto" "$lease" 2>&1 || true)
       fi
-      st=0
-      pf_parse_status "$out" || st=$?
+      if pf_parse_status "$out"; then
+        st=0
+      else
+        st=$?
+      fi
       vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
       if (( st == 0 )); then
         [[ -z "$new_port" ]] && new_port=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
@@ -954,8 +964,11 @@ pf_verify() {
   port="$(cat "$PORT_FILE" 2>/dev/null || echo "$PF_STATIC_FALLBACK_PORT")"
   gw="$(pf_detect_gateway)"
   out=$(natpmpc -g "$gw" -a "$port" "$port" udp 30 2>&1 || true)
-  st=0
-  pf_parse_status "$out" || st=$?
+  if pf_parse_status "$out"; then
+    st=0
+  else
+    st=$?
+  fi
   case "$st" in
     0) echo "PF OK on $gw (udp)" ;;
     2) echo "PF TRY AGAIN on $gw (likely unsupported)" ;;
