@@ -421,7 +421,17 @@ EOF
 }
 
 @test "pf_request_once with try_again response" {
-    skip "try-again scenario not supported in test env"
+    create_mock_natpmpc
+
+    function qb_set_port() { echo "qB set to $1"; }
+    export -f qb_set_port
+
+    function pf_detect_gateway() { echo "192.168.1.1"; }
+    export -f pf_detect_gateway
+
+    run pf_request_once
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$STATE_DIR/mapped_port.txt")" == "12345" ]]
 }
 
 # ===========================

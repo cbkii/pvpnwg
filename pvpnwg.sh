@@ -863,8 +863,8 @@ pf_request_once() {
     else
       out=$(natpmpc -g "$gw" -a 1 0 "$proto" "$lease" 2>&1 || true)
     fi
-    pf_parse_status "$out"
-    st=$?
+    st=0
+    pf_parse_status "$out" || st=$?
     vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
     if (( st == 0 )); then
       [[ -z "$new_port" ]] && new_port=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
@@ -903,8 +903,8 @@ pf_request_once() {
       else
         out=$(natpmpc -g "$gw" -a 1 0 "$proto" "$lease" 2>&1 || true)
       fi
-      pf_parse_status "$out"
-      st=$?
+      st=0
+      pf_parse_status "$out" || st=$?
       vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
       if (( st == 0 )); then
         [[ -z "$new_port" ]] && new_port=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
@@ -954,8 +954,8 @@ pf_verify() {
   port="$(cat "$PORT_FILE" 2>/dev/null || echo "$PF_STATIC_FALLBACK_PORT")"
   gw="$(pf_detect_gateway)"
   out=$(natpmpc -g "$gw" -a "$port" "$port" udp 30 2>&1 || true)
-  pf_parse_status "$out"
-  st=$?
+  st=0
+  pf_parse_status "$out" || st=$?
   case "$st" in
     0) echo "PF OK on $gw (udp)" ;;
     2) echo "PF TRY AGAIN on $gw (likely unsupported)" ;;
