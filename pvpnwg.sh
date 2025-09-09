@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 if [[ $EUID -eq 0 && -z "$CLI_USER" && -z "${SUDO_USER:-}" && -z "${PVPNWG_USER:-}" ]]; then
-  printf '%s\n' "Error: --user flag required when run as root without inferable user" >&2
+  echo "Error: please specify --user when running as root" >&2
   exit 1
 fi
 set -- "${orig_args[@]}"
