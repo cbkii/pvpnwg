@@ -16,6 +16,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+
 # Pre-parse for --user flag to set target user early
 CLI_USER=""
 for arg in "$@"; do
@@ -46,7 +47,6 @@ RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 RUN_HOME="${RUN_HOME:-$HOME}"
 RUN_UID="$(id -u "$RUN_USER" 2>/dev/null || echo 0)"
 RUN_GID="$(id -g "$RUN_USER" 2>/dev/null || echo 0)"
-
 PHOME_DEFAULT="${RUN_HOME}/.pvpnwg"
 CONFIG_DIR_DEFAULT="${PHOME_DEFAULT}/configs"
 IFACE_DEFAULT="pvpnwg0"
@@ -57,6 +57,8 @@ WEBUI_URL_DEFAULT="http://192.168.1.50:8080"
 WEBUI_USER_DEFAULT="admin"
 WEBUI_PASS_DEFAULT="change_me"
 QB_CONF_PATH_DEFAULT="${RUN_HOME}/.config/qBittorrent/qBittorrent.conf"
+
+PF_GATEWAY_FALLBACK_DEFAULT="10.2.0.1"
 PF_RENEW_SECS_DEFAULT=45
 PF_STATIC_FALLBACK_PORT_DEFAULT=51820
 PF_PROTO_LIST_DEFAULT=("udp" "tcp")
@@ -145,6 +147,7 @@ HANDSHAKE_FILE="${STATE_DIR}/last_handshake.txt"
 run_as_user mkdir -p "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
 run_as_user touch "$LOG_FILE" "$TIME_FILE" "$PORT_FILE" "$COOKIE_JAR" \
   "$MON_FAILS_FILE" "$PF_HISTORY" "$PF_JITTER_FILE" "$HANDSHAKE_FILE"
+
 
 # ===========================
 # Logging helpers
@@ -657,17 +660,20 @@ wg_unhealthy_reason() {
 # ===========================
 # qBittorrent helpers
 # ===========================
-  qb_login() {
-    : >"$COOKIE_JAR"
-    chmod 600 "$COOKIE_JAR"
-    if ! printf 'username=%s&password=%s' "$WEBUI_USER" "$WEBUI_PASS" |
-      curl -sS --fail --connect-timeout 10 -c "$COOKIE_JAR" \
-        --data-binary @- "${WEBUI_URL%/}/api/v2/auth/login" >/dev/null; then
-      log "WARN: qBittorrent WebUI login failed"
-      return 1
-    fi
-  }
-  qb_set_port_webui() {
+qb_login() {
+  if [[ ${EUID} -eq 0 ]]; then
+    install -m 600 -o "${RUN_UID}" -g "${RUN_GID}" /dev/null "$COOKIE_JAR"
+  else
+    install -m 600 /dev/null "$COOKIE_JAR"
+  fi
+  if ! printf 'username=%s&password=%s' "$WEBUI_USER" "$WEBUI_PASS" |
+    curl -sS --fail --connect-timeout 10 -c "$COOKIE_JAR" \
+      --data-binary @- "${WEBUI_URL%/}/api/v2/auth/login" >/dev/null; then
+    log "WARN: qBittorrent WebUI login failed"
+    return 1
+  fi
+}
+qb_set_port_webui() {
     local port="$1"
     qb_login || return 1
     local url="${WEBUI_URL%/}"
@@ -1570,8 +1576,13 @@ cmd_validate() {
 }
 
 cmd_init() {
-  mkdir -p "$PHOME" "$CONFIG_DIR"
-  chmod 700 "$PHOME"
+  if [[ ${EUID} -eq 0 ]]; then
+    install -d -m 700 -o "${RUN_UID}" -g "${RUN_GID}" "$PHOME" "$CONFIG_DIR"
+    install -m 600 -o "${RUN_UID}" -g "${RUN_GID}" /dev/null "$CONF_FILE"
+  else
+    install -d -m 700 "$PHOME" "$CONFIG_DIR"
+    install -m 600 /dev/null "$CONF_FILE"
+  fi
   cat >"$CONF_FILE" <<EOF
 # pvpnwg.conf — sourced by pvpnwg.sh
 PHOME="$PHOME"
@@ -1595,6 +1606,7 @@ DNS_HEALTH=${DNS_HEALTH}
 DNS_LAT_MS=$DNS_LAT_MS
 QBIT_HEALTH=${QBIT_HEALTH}
 EOF
+
   chmod 600 "$CONF_FILE"
   chown "${RUN_UID}:${RUN_GID}" "$CONF_FILE" 2>/dev/null || true
   log "Wrote $CONF_FILE"
@@ -1610,7 +1622,9 @@ cmd_monitor() { monitor_loop; }
 usage() {
   cat <<EOF
 Usage: $0 [global] <command> [options]
+
 Global: -v|--verbose  --dry-run  --user=NAME --pf-proto=LIST --pf-require-both=false  [env LOG_JSON=true]
+
 Commands:
   connect|c [--p2p|--sc|--pf|--any] [--cc CC]  Connect best server
   reconnect|r                                      Reconnect

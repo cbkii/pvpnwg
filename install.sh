@@ -187,8 +187,9 @@ EOF
 }
 
 setup_user_config() {
-    local user="$RUN_USER"
-    local home_dir="$RUN_HOME"
+    local user="${RUN_USER:-$(logname 2>/dev/null || echo root)}"
+    local home_dir
+    local home_dir="${RUN_HOME:-$(getent passwd "$user" | cut -d: -f6)}"
     local phome="${home_dir}/.pvpnwg"
 
     log "Setting up user configuration for: $user"
