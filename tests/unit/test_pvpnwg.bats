@@ -180,21 +180,18 @@ EOF
     local output="Mapped public port 12345 to local port 51820 using UDP"
     run pf_parse_status "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == "mapped" ]]
 }
 
 @test "pf_parse_status detects try_again status" {
     local output="External IP not found, try again later"
     run pf_parse_status "$output"
-    [ "$status" -eq 0 ]
-    [[ "$output" == "try_again" ]]
+    [ "$status" -eq 2 ]
 }
 
 @test "pf_parse_status detects error status" {
     local output="Connection failed: timeout"
     run pf_parse_status "$output"
-    [ "$status" -eq 0 ]
-    [[ "$output" == "error" ]]
+    [ "$status" -eq 1 ]
 }
 
 @test "conf_strip_ipv6_allowedips removes ::/0" {
@@ -434,7 +431,17 @@ EOF
 }
 
 @test "pf_request_once with try_again response" {
-    skip "try-again scenario not supported in test env"
+    create_mock_natpmpc
+
+    function qb_set_port() { echo "qB set to $1"; }
+    export -f qb_set_port
+
+    function pf_detect_gateway() { echo "192.168.1.1"; }
+    export -f pf_detect_gateway
+
+    run pf_request_once
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$STATE_DIR/mapped_port.txt")" == "12345" ]]
 }
 
 # ===========================
