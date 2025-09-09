@@ -35,6 +35,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+if [[ $EUID -eq 0 && -z "$CLI_USER" && -z "${SUDO_USER:-}" && -z "${PVPNWG_USER:-}" ]]; then
+  printf '%s\n' "Error: --user flag required when run as root without inferable user" >&2
+  exit 1
+fi
 set -- "${orig_args[@]}"
 
 # ===========================
@@ -48,12 +52,7 @@ elif [[ -n "${PVPNWG_USER:-}" ]]; then
 elif [[ -n "${SUDO_USER:-}" ]]; then
   RUN_USER="$SUDO_USER"
 else
-  cur="$(id -un 2>/dev/null || echo root)"
-  if [[ "$cur" == "root" ]]; then
-    printf '%s\n' "ERROR: specify target user with --user=NAME or PVPNWG_USER." >&2
-    exit 1
-  fi
-  RUN_USER="$cur"
+  RUN_USER="$(id -un 2>/dev/null || echo root)"
 fi
 if ! getent passwd "$RUN_USER" >/dev/null 2>&1; then
   printf 'Unknown user: %s\n' "$RUN_USER" >&2
