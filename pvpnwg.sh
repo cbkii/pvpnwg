@@ -479,21 +479,16 @@ conf_endpoint_host() {
   awk -F'=' '/^\s*Endpoint\s*=/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}' "$f" | awk -F':' '{print $1; exit}'
 }
 ping_rtt_ms() {
-  local host="$1" start end now last
-  start=$(date +%s%N)
-  if getent ahostsv4 "$host" >/dev/null 2>&1; then
-    end=$(date +%s%N)
-    echo $(((end-start)/1000000))
-    return
-  fi
+  local host="$1" ip now last out
+  ip=$(getent ahostsv4 "$host" | awk '{print $1; exit}' 2>/dev/null || true)
+  [[ -n "$ip" ]] || ip="$host"
   now=$(date +%s)
   last=$(cat "$STATE_DIR/ping_token.txt" 2>/dev/null || echo 0)
   if (( now - last < 5 )); then
     echo 9999
     return
   fi
-  local out
-  out=$(ping -4 -c1 -W1 "$host" 2>/dev/null) || { echo 9999; return; }
+  out=$(ping -4 -n -c1 -W1 "$ip" 2>/dev/null) || { echo 9999; return; }
   echo "$now" >"$STATE_DIR/ping_token.txt"
   echo "$out" | awk -F'=' '/time=/{print $NF}' | awk '{print $1}' | sed 's/ms//' || echo 9999
 }
