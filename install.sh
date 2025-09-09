@@ -91,7 +91,9 @@ install_binary() {
 
 create_systemd_units() {
     log "Creating systemd units..."
-    
+
+    command -v systemctl >/dev/null 2>&1 || die "systemctl not found; systemd is required"
+
     # pvpn-check.service
     cat > "${SYSTEMD_DIR}/pvpn-check.service" <<'EOF'
 [Unit]
@@ -110,6 +112,9 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
+    chmod 644 "${SYSTEMD_DIR}/pvpn-check.service"
+    chown root:root "${SYSTEMD_DIR}/pvpn-check.service"
+
     # pvpn-check.timer
     cat > "${SYSTEMD_DIR}/pvpn-check.timer" <<'EOF'
 [Unit]
@@ -125,6 +130,9 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+
+    chmod 644 "${SYSTEMD_DIR}/pvpn-check.timer"
+    chown root:root "${SYSTEMD_DIR}/pvpn-check.timer"
 
     # pvpn-pf.service
     cat > "${SYSTEMD_DIR}/pvpn-pf.service" <<'EOF'
@@ -146,6 +154,9 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
+    chmod 644 "${SYSTEMD_DIR}/pvpn-pf.service"
+    chown root:root "${SYSTEMD_DIR}/pvpn-pf.service"
+
     # pvpn-monitor.service
     cat > "${SYSTEMD_DIR}/pvpn-monitor.service" <<'EOF'
 [Unit]
@@ -166,6 +177,9 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
+    chmod 644 "${SYSTEMD_DIR}/pvpn-monitor.service"
+    chown root:root "${SYSTEMD_DIR}/pvpn-monitor.service"
+
     # pvpn-monitor.timer
     cat > "${SYSTEMD_DIR}/pvpn-monitor.timer" <<'EOF'
 [Unit]
@@ -182,7 +196,10 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-    systemctl daemon-reload
+    chmod 644 "${SYSTEMD_DIR}/pvpn-monitor.timer"
+    chown root:root "${SYSTEMD_DIR}/pvpn-monitor.timer"
+
+    systemctl daemon-reload || die "Failed to reload systemd daemon"
     log "✓ Created systemd units"
 }
 
@@ -212,22 +229,24 @@ setup_user_config() {
 }
 
 enable_services() {
+    command -v systemctl >/dev/null 2>&1 || die "systemctl not found; systemd is required"
+
     read -p "Enable automatic health checks? [Y/n] " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Nn]$ ]]; then
         log "Skipping service enablement"
         return
     fi
-    
+
     log "Enabling pvpn-check.timer..."
-    systemctl enable pvpn-check.timer
-    systemctl start pvpn-check.timer
+    systemctl enable pvpn-check.timer || die "Failed to enable pvpn-check.timer"
+    systemctl start pvpn-check.timer || die "Failed to start pvpn-check.timer"
     
     read -p "Enable port forwarding service? [y/N] " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         log "Enabling pvpn-pf.service..."
-        systemctl enable pvpn-pf.service
+        systemctl enable pvpn-pf.service || die "Failed to enable pvpn-pf.service"
         log "Start with: systemctl start pvpn-pf.service (after connecting VPN)"
     fi
     
