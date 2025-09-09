@@ -1,9 +1,12 @@
 #!/usr/bin/env bats
 # tests/unit/test_user_paths.bats — verify user detection and ownership
 
+load ../test_helper.bats
+
 SCRIPT="$BATS_TEST_DIRNAME/../../pvpnwg.sh"
 
 setup() {
+    require_root
     export PATH="$BATS_TEST_DIRNAME/../mock/bin:$PATH"
 }
 

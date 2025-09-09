@@ -32,9 +32,28 @@ teardown() {
 # ===========================
 
 @test "--user flag required when run as root without inferable user" {
-    run bash -c 'unset SUDO_USER PVPNWG_USER; bash pvpnwg.sh >/dev/null'
+    if [ "$EUID" -ne 0 ]; then
+        skip "requires root"
+    fi
+    run bash -c 'unset SUDO_USER PVPNWG_USER; PVPNWG_NO_MAIN=1 bash pvpnwg.sh >/dev/null'
     [ "$status" -eq 1 ]
     [[ "$output" == *"--user"* ]]
+}
+
+@test "SUDO_USER suffices when running as root" {
+    if [ "$EUID" -ne 0 ]; then
+        skip "requires root"
+    fi
+    run bash -c 'unset PVPNWG_USER; SUDO_USER="$(id -un)" PVPNWG_NO_MAIN=1 bash pvpnwg.sh >/dev/null'
+    [ "$status" -eq 0 ]
+}
+
+@test "PVPNWG_USER suffices when running as root" {
+    if [ "$EUID" -ne 0 ]; then
+        skip "requires root"
+    fi
+    run bash -c 'unset SUDO_USER; PVPNWG_USER="$(id -un)" PVPNWG_NO_MAIN=1 bash pvpnwg.sh >/dev/null'
+    [ "$status" -eq 0 ]
 }
 
 # ===========================

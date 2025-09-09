@@ -41,11 +41,13 @@ MOCK
 }
 
 teardown() {
-    for u in testA testB testC; do
-        id "$u" >/dev/null 2>&1 && userdel -r "$u" 2>/dev/null || true
-    done
+    if [[ ${EUID} -eq 0 ]]; then
+        for u in testA testB testC; do
+            id "$u" >/dev/null 2>&1 && userdel -r "$u" 2>/dev/null || true
+        done
+        rm -rf /root/.pvpnwg
+    fi
     rm -rf "$TEST_TMPDIR"
-    rm -rf /root/.pvpnwg
 }
 
 @test "--user overrides SUDO_USER and creates owned paths" {
@@ -71,6 +73,20 @@ teardown() {
     owner=$(stat -c %U "$homeA/.pvpnwg")
     [ "$owner" = "testA" ]
     [ ! -e "/root/.pvpnwg" ]
+}
+
+@test "PVPNWG_USER overrides SUDO_USER when flag omitted" {
+    homeA="$TEST_TMPDIR/homeA"
+    homeB="$TEST_TMPDIR/homeB"
+    useradd -m -d "$homeA" testA
+    useradd -m -d "$homeB" testB
+    rm -rf /root/.pvpnwg "$homeA/.pvpnwg" "$homeB/.pvpnwg"
+    run bash -c "SUDO_USER=testA PVPNWG_USER=testB PVPNWG_NO_MAIN=1 source '$SCRIPT'"
+    [ "$status" -eq 0 ]
+    [ -d "$homeB/.pvpnwg" ]
+    [ ! -e "$homeA/.pvpnwg" ]
+    owner=$(stat -c %U "$homeB/.pvpnwg")
+    [ "$owner" = "testB" ]
 }
 
 @test "init works unprivileged but status requires root" {

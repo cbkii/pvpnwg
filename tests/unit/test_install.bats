@@ -15,7 +15,7 @@ exit 0
 MOCK
         chmod +x "$TEST_TMPDIR/$dep"
     done
-    export PATH="$TEST_TMPDIR:$PATH"
+    export PATH="$TEST_TMPDIR:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/bin"
     SCRIPT="$BATS_TEST_DIRNAME/../../install.sh"
 }
 
@@ -24,7 +24,7 @@ teardown() {
 }
 
 @test "installation fails when natpmpc is missing" {
-    run bash "$SCRIPT"
+    run /bin/bash "$SCRIPT"
     [ "$status" -ne 0 ]
     [[ "$output" == *"natpmpc"* ]]
 }
@@ -40,7 +40,7 @@ MOCK
 echo "20150101-1"
 MOCK
     chmod +x "$TEST_TMPDIR/dpkg-query"
-    run bash "$SCRIPT"
+    run /bin/bash "$SCRIPT"
     [ "$status" -ne 0 ]
     [[ "$output" == *"natpmpc"* ]]
 }
@@ -91,7 +91,7 @@ $function_code
 install_natpmpc_unstable
 EOF
 
-    run bash "$TEST_TMPDIR/run.sh"
+    run /bin/bash "$TEST_TMPDIR/run.sh"
     [ "$status" -eq 0 ]
     grep -q 'Package: foo' "$PIN_FILE"
     grep -q 'Package: natpmpc libnatpmp1t64 libnatpmp1' "$PIN_FILE"
