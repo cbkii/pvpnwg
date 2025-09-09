@@ -97,6 +97,7 @@ WEBUI_USER="${WEBUI_USER:-${WEBUI_USER_DEFAULT}}"
 WEBUI_PASS="${WEBUI_PASS:-${WEBUI_PASS_DEFAULT}}"
 QB_CONF_PATH="${QB_CONF_PATH:-${QB_CONF_PATH_DEFAULT}}"
 PF_RENEW_SECS="${PF_RENEW_SECS:-${PF_RENEW_SECS_DEFAULT}}"
+PF_GATEWAY_FALLBACK="${PF_GATEWAY_FALLBACK:-${PF_GATEWAY_FALLBACK_DEFAULT}}"
 PF_STATIC_FALLBACK_PORT="${PF_STATIC_FALLBACK_PORT:-${PF_STATIC_FALLBACK_PORT_DEFAULT}}"
 PF_REQUIRE_BOTH="${PF_REQUIRE_BOTH:-${PF_REQUIRE_BOTH_DEFAULT}}"
 KILLSWITCH_DEFAULT="${KILLSWITCH_DEFAULT:-${KILLSWITCH_DEFAULT_DEFAULT}}"
@@ -789,7 +790,7 @@ pf_derive_gateway_from_conf() {
     printf "%s.%s.%s.1\n" "$a" "$b" "$c"
     return 0
   fi
-  echo "10.2.0.1"
+  echo "$PF_GATEWAY_FALLBACK"
 }
 
 pf_detect_gateway() {
@@ -798,7 +799,7 @@ pf_detect_gateway() {
   if natpmpc -g "$derived" -a 1 0 udp 10 -q >/dev/null 2>&1; then
     echo "$derived"
   else
-    echo "10.2.0.1"
+    echo "$PF_GATEWAY_FALLBACK"
   fi
 }
 
@@ -898,9 +899,9 @@ pf_request_once() {
     return 0
   fi
 
-  if [[ "$gw" != "10.2.0.1" ]]; then
-    vlog "PF: retrying with static gateway 10.2.0.1"
-    gw="10.2.0.1"
+  if [[ "$gw" != "$PF_GATEWAY_FALLBACK" ]]; then
+    vlog "PF: retrying with static gateway $PF_GATEWAY_FALLBACK"
+    gw="$PF_GATEWAY_FALLBACK"
     ok_count=0; new_port=""; saw_try_again=false
     for proto in "${PF_PROTO_LIST[@]}"; do
       if [[ -n "$prev" ]]; then

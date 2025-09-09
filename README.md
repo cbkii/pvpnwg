@@ -276,6 +276,7 @@ WEBUI_PASS="your_password"        # supports special characters
 
 # Port forwarding
 PF_RENEW_SECS=45               # NAT-PMP renewal interval
+PF_GATEWAY_FALLBACK=10.2.0.1   # NAT-PMP gateway fallback
 PF_STATIC_FALLBACK_PORT=51820  # Fallback port if PF fails
 
 # Health monitoring
