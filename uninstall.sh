@@ -7,8 +7,8 @@ CLI_USER=""
 ARGS=()
 for arg in "$@"; do
   case "$arg" in
-  --user=*) CLI_USER="${arg#*=}" ;;
-  *) ARGS+=("$arg") ;;
+    --user=*) CLI_USER="${arg#*=}" ;;
+    *) ARGS+=("$arg") ;;
   esac
 done
 set -- "${ARGS[@]}"

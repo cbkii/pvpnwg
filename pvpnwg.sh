@@ -21,17 +21,17 @@ CLI_USER=""
 orig_args=("$@")
 while [[ $# -gt 0 ]]; do
   case "$1" in
-  --user=*)
-    CLI_USER="${1#*=}"
-    shift
-    ;;
-  --user)
-    CLI_USER="$2"
-    shift 2
-    ;;
-  *)
-    shift
-    ;;
+    --user=*)
+      CLI_USER="${1#*=}"
+      shift
+      ;;
+    --user)
+      CLI_USER="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
   esac
 done
 if [[ $EUID -eq 0 && -z "$CLI_USER" && -z "${SUDO_USER:-}" && -z "${PVPNWG_USER:-}" ]]; then
@@ -183,12 +183,12 @@ rotate_logs() {
   fi
 }
 _log_plain() {
-  printf "%s %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$(printf '%s ' "$@" | sed 's/ $//')" |
-    tee -a "$LOG_FILE" >&2
+  printf "%s %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$(printf '%s ' "$@" | sed 's/ $//')" \
+    | tee -a "$LOG_FILE" >&2
 }
 _log_json() {
-  jq -cn --arg ts "$(date -Iseconds)" --arg msg "$(printf '%s ' "$@" | sed 's/ $//')" '{ts:$ts, msg:$msg}' |
-    tee -a "$LOG_FILE" >&2
+  jq -cn --arg ts "$(date -Iseconds)" --arg msg "$(printf '%s ' "$@" | sed 's/ $//')" '{ts:$ts, msg:$msg}' \
+    | tee -a "$LOG_FILE" >&2
 }
 log() {
   rotate_logs
@@ -265,17 +265,17 @@ dns_backup() {
 dns_restore_generic() {
   detect_dns_backend
   case "$dns_backend" in
-  systemd-resolved)
-    _run resolvectl revert "$IFACE" || true
-    ;;
-  resolvconf)
-    _run resolvconf -u || true
-    ;;
-  *)
-    : >"$TMP_DIR/resolv.conf.generic"
-    printf '%s\n' "nameserver 1.1.1.1" "nameserver 8.8.8.8" >>"$TMP_DIR/resolv.conf.generic"
-    _run cp -f "$TMP_DIR/resolv.conf.generic" /etc/resolv.conf || true
-    ;;
+    systemd-resolved)
+      _run resolvectl revert "$IFACE" || true
+      ;;
+    resolvconf)
+      _run resolvconf -u || true
+      ;;
+    *)
+      : >"$TMP_DIR/resolv.conf.generic"
+      printf '%s\n' "nameserver 1.1.1.1" "nameserver 8.8.8.8" >>"$TMP_DIR/resolv.conf.generic"
+      _run cp -f "$TMP_DIR/resolv.conf.generic" /etc/resolv.conf || true
+      ;;
   esac
   log "DNS restored generically"
 }
@@ -337,60 +337,60 @@ dns_latency_test() {
 
 cmd_dns() {
   case "${1:-}" in
-  backup) dns_backup ;;
-  restore) dns_restore ;;
-  dedupe) dns_dedupe ;;
-  set)
-    case "${2:-}" in
-    proton)
-      detect_dns_backend
-      local dns_servers
-      dns_servers=$(wg_conf_dns | tr ',' ' ' | xargs -n1 | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | xargs)
-      if [[ -z "$dns_servers" ]]; then
-        log "WARN: no IPv4 DNS in $TARGET_CONF"
-        return 1
-      fi
-      if [[ "$dns_backend" == "systemd-resolved" ]]; then
-        for d in $dns_servers; do _run resolvectl dns "$IFACE" "$d" || true; done
-        _run resolvectl domain "$IFACE" "~." || true
-        log "DNS(v4): set on $IFACE via systemd-resolved"
-      else
-        if [[ -L /etc/resolv.conf ]]; then
-          log "INFO: /etc/resolv.conf is a symlink; skipping write"
-        else
-          : >"$TMP_DIR/resolv.conf.new"
-          for d in $dns_servers; do printf 'nameserver %s\n' "$d" >>"$TMP_DIR/resolv.conf.new"; done
-          _run cp -f "$TMP_DIR/resolv.conf.new" /etc/resolv.conf
-          log "DNS set to Proton (${dns_servers})"
-        fi
-      fi
+    backup) dns_backup ;;
+    restore) dns_restore ;;
+    dedupe) dns_dedupe ;;
+    set)
+      case "${2:-}" in
+        proton)
+          detect_dns_backend
+          local dns_servers
+          dns_servers=$(wg_conf_dns | tr ',' ' ' | xargs -n1 | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | xargs)
+          if [[ -z "$dns_servers" ]]; then
+            log "WARN: no IPv4 DNS in $TARGET_CONF"
+            return 1
+          fi
+          if [[ "$dns_backend" == "systemd-resolved" ]]; then
+            for d in $dns_servers; do _run resolvectl dns "$IFACE" "$d" || true; done
+            _run resolvectl domain "$IFACE" "~." || true
+            log "DNS(v4): set on $IFACE via systemd-resolved"
+          else
+            if [[ -L /etc/resolv.conf ]]; then
+              log "INFO: /etc/resolv.conf is a symlink; skipping write"
+            else
+              : >"$TMP_DIR/resolv.conf.new"
+              for d in $dns_servers; do printf 'nameserver %s\n' "$d" >>"$TMP_DIR/resolv.conf.new"; done
+              _run cp -f "$TMP_DIR/resolv.conf.new" /etc/resolv.conf
+              log "DNS set to Proton (${dns_servers})"
+            fi
+          fi
+          ;;
+        system)
+          dns_restore || true
+          log "DNS restored/system"
+          ;;
+        *)
+          echo "Usage: $0 dns set {proton|system}"
+          return 1
+          ;;
+      esac
       ;;
-    system)
-      dns_restore || true
-      log "DNS restored/system"
+    test)
+      local resolver="${2:-resolver1.opendns.com}"
+      local bin=""
+      command -v dig >/dev/null 2>&1 && bin=dig || bin=drill
+      command -v "$bin" >/dev/null 2>&1 || die "Install dnsutils (dig) or ldnsutils (drill)."
+      $bin +short TXT o-o.myaddr.l.google.com @"$resolver" || true
+      ;;
+    latency)
+      local ms
+      ms=$(dns_latency_test "${2:-}" "${3:-google.com}" || echo "")
+      if [[ -n "$ms" ]]; then echo "DNS latency: ${ms}ms"; else echo "DNS latency: unavailable"; fi
       ;;
     *)
-      echo "Usage: $0 dns set {proton|system}"
+      echo "Usage: $0 dns {backup|restore|dedupe|set {proton|system}|test [resolver]|latency [resolver] [target]}"
       return 1
       ;;
-    esac
-    ;;
-  test)
-    local resolver="${2:-resolver1.opendns.com}"
-    local bin=""
-    command -v dig >/dev/null 2>&1 && bin=dig || bin=drill
-    command -v "$bin" >/dev/null 2>&1 || die "Install dnsutils (dig) or ldnsutils (drill)."
-    $bin +short TXT o-o.myaddr.l.google.com @"$resolver" || true
-    ;;
-  latency)
-    local ms
-    ms=$(dns_latency_test "${2:-}" "${3:-google.com}" || echo "")
-    if [[ -n "$ms" ]]; then echo "DNS latency: ${ms}ms"; else echo "DNS latency: unavailable"; fi
-    ;;
-  *)
-    echo "Usage: $0 dns {backup|restore|dedupe|set {proton|system}|test [resolver]|latency [resolver] [target]}"
-    return 1
-    ;;
   esac
 }
 
@@ -563,10 +563,10 @@ select_conf() {
     local base
     base="$(basename "$f")"
     case "$mode" in
-    p2p) is_secure_core_name "$base" && continue ;;
-    sc) is_secure_core_name "$base" || continue ;;
-    pf) is_pf_name "$base" || continue ;;
-    any) : ;;
+      p2p) is_secure_core_name "$base" && continue ;;
+      sc) is_secure_core_name "$base" || continue ;;
+      pf) is_pf_name "$base" || continue ;;
+      any) : ;;
     esac
     [[ -n "$cc" && "$base" != *"$cc"* ]] && continue
 
@@ -830,14 +830,14 @@ PF_BACKOFF_MAX=60
 
 pf_derive_gateway_from_conf() {
   local dns addr
-  dns=$(awk -F= '/^\s*DNS\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | tr ',' ' ' | xargs -n1 |
-    grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+  dns=$(awk -F= '/^\s*DNS\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | tr ',' ' ' | xargs -n1 \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
   if [[ -n "$dns" ]]; then
     echo "$dns"
     return 0
   fi
-  addr=$(awk -F= '/^\s*Address\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | tr ',' ' ' |
-    grep -Eo '10\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+  addr=$(awk -F= '/^\s*Address\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | tr ',' ' ' \
+    | grep -Eo '10\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
   if [[ -n "$addr" ]]; then
     IFS='.' read -r a b c d <<<"$addr"
     printf "%s.%s.%s.1\n" "$a" "$b" "$c"
@@ -936,18 +936,18 @@ pf_request_once() {
 
       for proto in "${PF_PROTO_LIST[@]}"; do
         case "$mode" in
-        renew)
-          try_pub="$prev"
-          try_prv="$prev"
-          ;;
-        any)
-          try_pub=1
-          try_prv=0
-          ;;
-        mirror)
-          try_pub=0
-          try_prv=0
-          ;;
+          renew)
+            try_pub="$prev"
+            try_prv="$prev"
+            ;;
+          any)
+            try_pub=1
+            try_prv=0
+            ;;
+          mirror)
+            try_pub=0
+            try_prv=0
+            ;;
         esac
 
         out=$(natpmpc -g "$gw_tried" -a "$try_pub" "$try_prv" "$proto" "$lease" 2>&1 || true)
@@ -1023,9 +1023,9 @@ pf_verify() {
     st=$?
   fi
   case "$st" in
-  0) echo "PF OK on $gw (udp)" ;;
-  2) echo "PF TRY AGAIN on $gw (likely unsupported)" ;;
-  *) echo "PF FAILED on $gw" ;;
+    0) echo "PF OK on $gw (udp)" ;;
+    2) echo "PF TRY AGAIN on $gw (likely unsupported)" ;;
+    *) echo "PF FAILED on $gw" ;;
   esac
 }
 
@@ -1275,8 +1275,8 @@ killswitch_status() {
   if command -v nft >/dev/null 2>&1 && nft list table inet pvpnwg >/dev/null 2>&1; then
     echo "nft:enabled"
   elif command -v iptables >/dev/null 2>&1; then
-    if iptables -S OUTPUT 2>/dev/null | grep -q "^-P OUTPUT DROP" &&
-      iptables -C OUTPUT -o "${IFACE}" -j ACCEPT >/dev/null 2>&1; then
+    if iptables -S OUTPUT 2>/dev/null | grep -q "^-P OUTPUT DROP" \
+      && iptables -C OUTPUT -o "${IFACE}" -j ACCEPT >/dev/null 2>&1; then
       echo "iptables:enabled"
     else
       echo "iptables:disabled"
@@ -1291,88 +1291,88 @@ killswitch_status() {
 # ===========================
 cmd_diag() {
   case "${1:-}" in
-  wg)
-    echo "=== WireGuard Diagnostics ==="
-    echo "Interface: $IFACE"
-    echo "State: $(wg_link_state)"
-    local handshake_age
-    handshake_age=$(wg_handshake_age 2>/dev/null || echo "never")
-    echo "Handshake age: ${handshake_age}s (max: ${HANDSHAKE_MAX_AGE}s)"
-    local endpoint
-    endpoint=$(wg_endpoint_host)
-    echo "Endpoint: ${endpoint:-none}"
-    if [[ -n "$endpoint" ]]; then
-      local rtt
-      rtt=$(ping_rtt_ms "$endpoint")
-      echo "Endpoint RTT: ${rtt}ms (threshold: ${LATENCY_THRESHOLD_MS}ms)"
-    fi
-    local reason
-    if ! reason=$(wg_unhealthy_reason 2>/dev/null); then
-      reason=${reason:-unknown}
-    fi
-    echo "Health: $reason"
-    echo
-    echo "Raw wg show:"
-    wg show "$IFACE" 2>/dev/null || echo "Interface not found"
-    ;;
-  pf)
-    pf_diag
-    ;;
-  dns)
-    echo "=== DNS Diagnostics ==="
-    echo "Backend: $dns_backend"
-    echo "Current resolv.conf:"
-    cat /etc/resolv.conf 2>/dev/null || echo "Not readable"
-    echo
-    if [[ "$DNS_HEALTH" == "true" ]]; then
-      echo "DNS latency tests:"
-      local ms resolver
-      resolver=$(wg_conf_dns | awk '{print $1}' | head -1)
-      ms=$(dns_latency_test "$resolver" "google.com" 2>/dev/null || echo "failed")
-      echo "  Proton (${resolver:-unset}): ${ms}ms"
-      ms=$(dns_latency_test "8.8.8.8" "google.com" 2>/dev/null || echo "failed")
-      echo "  Google (8.8.8.8): ${ms}ms"
-    fi
-    echo
-    echo "Leak test (via OpenDNS):"
-    cmd_dns test 2>/dev/null || echo "Failed"
-    ;;
-  qb)
-    echo "=== qBittorrent Diagnostics ==="
-    local port
-    port=$(qb_get_port 2>/dev/null || echo "unavailable")
-    echo "Listen port: $port"
-    echo "WebUI URL: $WEBUI_URL"
-    if qb_login 2>/dev/null; then
-      echo "WebUI auth: OK"
-      local version
-      version=$(curl -sS --fail --connect-timeout 10 -b "$COOKIE_JAR" "${WEBUI_URL%/}/api/v2/app/version" 2>/dev/null || echo "unknown")
-      echo "Version: $version"
-    else
-      echo "WebUI auth: FAILED"
-    fi
-    if [[ -r "$QB_CONF_PATH" ]]; then
-      echo "Config file: accessible"
-      local conf_port
-      conf_port=$(qb_conf_get_port || echo "not found")
-      echo "Config port: $conf_port"
-    else
-      echo "Config file: not accessible"
-    fi
-    ;;
-  all)
-    cmd_diag wg
-    echo
-    cmd_diag pf
-    echo
-    cmd_diag dns
-    echo
-    cmd_diag qb
-    ;;
-  *)
-    echo "Usage: $0 diag {wg|pf|dns|qb|all}"
-    return 1
-    ;;
+    wg)
+      echo "=== WireGuard Diagnostics ==="
+      echo "Interface: $IFACE"
+      echo "State: $(wg_link_state)"
+      local handshake_age
+      handshake_age=$(wg_handshake_age 2>/dev/null || echo "never")
+      echo "Handshake age: ${handshake_age}s (max: ${HANDSHAKE_MAX_AGE}s)"
+      local endpoint
+      endpoint=$(wg_endpoint_host)
+      echo "Endpoint: ${endpoint:-none}"
+      if [[ -n "$endpoint" ]]; then
+        local rtt
+        rtt=$(ping_rtt_ms "$endpoint")
+        echo "Endpoint RTT: ${rtt}ms (threshold: ${LATENCY_THRESHOLD_MS}ms)"
+      fi
+      local reason
+      if ! reason=$(wg_unhealthy_reason 2>/dev/null); then
+        reason=${reason:-unknown}
+      fi
+      echo "Health: $reason"
+      echo
+      echo "Raw wg show:"
+      wg show "$IFACE" 2>/dev/null || echo "Interface not found"
+      ;;
+    pf)
+      pf_diag
+      ;;
+    dns)
+      echo "=== DNS Diagnostics ==="
+      echo "Backend: $dns_backend"
+      echo "Current resolv.conf:"
+      cat /etc/resolv.conf 2>/dev/null || echo "Not readable"
+      echo
+      if [[ "$DNS_HEALTH" == "true" ]]; then
+        echo "DNS latency tests:"
+        local ms resolver
+        resolver=$(wg_conf_dns | awk '{print $1}' | head -1)
+        ms=$(dns_latency_test "$resolver" "google.com" 2>/dev/null || echo "failed")
+        echo "  Proton (${resolver:-unset}): ${ms}ms"
+        ms=$(dns_latency_test "8.8.8.8" "google.com" 2>/dev/null || echo "failed")
+        echo "  Google (8.8.8.8): ${ms}ms"
+      fi
+      echo
+      echo "Leak test (via OpenDNS):"
+      cmd_dns test 2>/dev/null || echo "Failed"
+      ;;
+    qb)
+      echo "=== qBittorrent Diagnostics ==="
+      local port
+      port=$(qb_get_port 2>/dev/null || echo "unavailable")
+      echo "Listen port: $port"
+      echo "WebUI URL: $WEBUI_URL"
+      if qb_login 2>/dev/null; then
+        echo "WebUI auth: OK"
+        local version
+        version=$(curl -sS --fail --connect-timeout 10 -b "$COOKIE_JAR" "${WEBUI_URL%/}/api/v2/app/version" 2>/dev/null || echo "unknown")
+        echo "Version: $version"
+      else
+        echo "WebUI auth: FAILED"
+      fi
+      if [[ -r "$QB_CONF_PATH" ]]; then
+        echo "Config file: accessible"
+        local conf_port
+        conf_port=$(qb_conf_get_port || echo "not found")
+        echo "Config port: $conf_port"
+      else
+        echo "Config file: not accessible"
+      fi
+      ;;
+    all)
+      cmd_diag wg
+      echo
+      cmd_diag pf
+      echo
+      cmd_diag dns
+      echo
+      cmd_diag qb
+      ;;
+    *)
+      echo "Usage: $0 diag {wg|pf|dns|qb|all}"
+      return 1
+      ;;
   esac
 }
 
@@ -1501,47 +1501,47 @@ cmd_check() {
 
 cmd_qb() {
   case "${1:-}" in
-  port)
-    shift
-    [[ $# -lt 1 ]] && die "Usage: qb port PORT"
-    [[ "$1" =~ ^[0-9]+$ ]] || die "PORT must be numeric"
-    qb_set_port "$1"
-    ;;
-  fix-stalled)
-    qb_fix_stalled
-    ;;
-  health)
-    qb_health_check && echo "qB health: OK" || echo "qB health: FAILED"
-    ;;
-  *)
-    echo "Usage: $0 qb {port PORT|fix-stalled|health}"
-    return 1
-    ;;
+    port)
+      shift
+      [[ $# -lt 1 ]] && die "Usage: qb port PORT"
+      [[ "$1" =~ ^[0-9]+$ ]] || die "PORT must be numeric"
+      qb_set_port "$1"
+      ;;
+    fix-stalled)
+      qb_fix_stalled
+      ;;
+    health)
+      qb_health_check && echo "qB health: OK" || echo "qB health: FAILED"
+      ;;
+    *)
+      echo "Usage: $0 qb {port PORT|fix-stalled|health}"
+      return 1
+      ;;
   esac
 }
 
 cmd_pf() {
   case "${1:-}" in
-  start) pf_loop ;;
-  once) pf_request_once ;;
-  verify) pf_verify ;;
-  diag) pf_diag ;;
-  status)
-    if [[ -s "$PORT_FILE" ]]; then
-      echo "PF port (current/kept): $(cat "$PORT_FILE")"
-    else
-      echo "No PF state"
-    fi
-    echo "Gateway: $(pf_detect_gateway)"
-    echo "Jitter: $(cat "$PF_JITTER_FILE" 2>/dev/null || echo 0)"
-    ;;
-  stop)
-    echo "If systemd, stop pvpn-pf.service; if interactive, Ctrl+C"
-    ;;
-  *)
-    echo "Usage: $0 pf {start|once|verify|diag|status|stop}"
-    return 1
-    ;;
+    start) pf_loop ;;
+    once) pf_request_once ;;
+    verify) pf_verify ;;
+    diag) pf_diag ;;
+    status)
+      if [[ -s "$PORT_FILE" ]]; then
+        echo "PF port (current/kept): $(cat "$PORT_FILE")"
+      else
+        echo "No PF state"
+      fi
+      echo "Gateway: $(pf_detect_gateway)"
+      echo "Jitter: $(cat "$PF_JITTER_FILE" 2>/dev/null || echo 0)"
+      ;;
+    stop)
+      echo "If systemd, stop pvpn-pf.service; if interactive, Ctrl+C"
+      ;;
+    *)
+      echo "Usage: $0 pf {start|once|verify|diag|status|stop}"
+      return 1
+      ;;
   esac
 }
 
@@ -1574,9 +1574,9 @@ cmd_rename_pf() {
   _ng=$(shopt -p nullglob)
   shopt -s nullglob
   for f in "${CONFIG_DIR}"/*.conf; do
-    if grep -q '^# Moderate NAT = off$' "$f" &&
-      grep -q '^# NAT-PMP (Port Forwarding) = on$' "$f" &&
-      [[ "$f" != *PF.conf ]]; then
+    if grep -q '^# Moderate NAT = off$' "$f" \
+      && grep -q '^# NAT-PMP (Port Forwarding) = on$' "$f" \
+      && [[ "$f" != *PF.conf ]]; then
       local nf="${f%.conf}PF.conf"
       _run mv -f "$f" "$nf"
       log "Renamed $(basename "$f") -> $(basename "$nf")"
@@ -1587,15 +1587,15 @@ cmd_rename_pf() {
 
 cmd_killswitch() {
   case "${1:-}" in
-  enable) killswitch_enable ;;
-  disable) killswitch_disable ;;
-  iptables-enable) killswitch_iptables_enable ;;
-  iptables-disable) killswitch_iptables_disable ;;
-  status) killswitch_status ;;
-  *)
-    echo "Usage: $0 killswitch {enable|disable|iptables-enable|iptables-disable|status}"
-    return 1
-    ;;
+    enable) killswitch_enable ;;
+    disable) killswitch_disable ;;
+    iptables-enable) killswitch_iptables_enable ;;
+    iptables-disable) killswitch_iptables_disable ;;
+    status) killswitch_status ;;
+    *)
+      echo "Usage: $0 killswitch {enable|disable|iptables-enable|iptables-disable|status}"
+      return 1
+      ;;
   esac
 }
 
@@ -1608,36 +1608,36 @@ cmd_reset() {
 
 cmd_validate() {
   case "${1:-}" in
-  conf)
-    shift
-    [[ $# -lt 1 ]] && die "Usage: validate conf FILE"
-    local result
-    result=$(conf_validate "$1" 2>&1 || echo "invalid")
-    echo "$1: $result"
-    [[ "$result" == "valid" ]]
-    ;;
-  configs)
-    echo "Validating configs in $CONFIG_DIR:"
-    printf "%-30s %s\n" "FILE" "STATUS"
-    local total=0 valid=0
-    local _ng
-    _ng=$(shopt -p nullglob)
-    shopt -s nullglob
-    for f in "${CONFIG_DIR}"/*.conf; do
+    conf)
+      shift
+      [[ $# -lt 1 ]] && die "Usage: validate conf FILE"
       local result
-      result=$(conf_validate "$f" 2>&1 || echo "invalid")
-      printf "%-30s %s\n" "$(basename "$f")" "$result"
-      ((total++))
-      [[ "$result" == "valid" ]] && ((valid++))
-    done
-    eval "$_ng"
-    echo "Summary: $valid/$total valid"
-    [[ $valid -eq $total ]]
-    ;;
-  *)
-    echo "Usage: $0 validate {conf FILE|configs}"
-    return 1
-    ;;
+      result=$(conf_validate "$1" 2>&1 || echo "invalid")
+      echo "$1: $result"
+      [[ "$result" == "valid" ]]
+      ;;
+    configs)
+      echo "Validating configs in $CONFIG_DIR:"
+      printf "%-30s %s\n" "FILE" "STATUS"
+      local total=0 valid=0
+      local _ng
+      _ng=$(shopt -p nullglob)
+      shopt -s nullglob
+      for f in "${CONFIG_DIR}"/*.conf; do
+        local result
+        result=$(conf_validate "$f" 2>&1 || echo "invalid")
+        printf "%-30s %s\n" "$(basename "$f")" "$result"
+        ((total++))
+        [[ "$result" == "valid" ]] && ((valid++))
+      done
+      eval "$_ng"
+      echo "Summary: $valid/$total valid"
+      [[ $valid -eq $total ]]
+      ;;
+    *)
+      echo "Usage: $0 validate {conf FILE|configs}"
+      return 1
+      ;;
   esac
 }
 
@@ -1716,38 +1716,38 @@ parse_globals() {
   local args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    -v | --verbose)
-      VERBOSE=1
-      shift
-      ;;
-    --dry-run)
-      DRY_RUN=1
-      shift
-      ;;
-    --user=*)
-      CLI_USER="${1#*=}"
-      shift
-      ;;
-    --user)
-      CLI_USER="$2"
-      shift 2
-      ;;
-    --pf-proto=*)
-      IFS=',' read -r -a PF_PROTO_LIST <<<"${1#*=}"
-      shift
-      ;;
-    --pf-require-both=false)
-      PF_REQUIRE_BOTH=false
-      shift
-      ;;
-    --)
-      shift
-      break
-      ;;
-    *)
-      args+=("$1")
-      shift
-      ;;
+      -v | --verbose)
+        VERBOSE=1
+        shift
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        shift
+        ;;
+      --user=*)
+        CLI_USER="${1#*=}"
+        shift
+        ;;
+      --user)
+        CLI_USER="$2"
+        shift 2
+        ;;
+      --pf-proto=*)
+        IFS=',' read -r -a PF_PROTO_LIST <<<"${1#*=}"
+        shift
+        ;;
+      --pf-require-both=false)
+        PF_REQUIRE_BOTH=false
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
     esac
   done
   printf '%s\n' "${args[@]}"
@@ -1764,28 +1764,28 @@ main() {
     detect_dns_backend
   fi
   case "$cmd" in
-  connect | c) cmd_connect "${rest[@]:-}" ;;
-  reconnect | r) cmd_reconnect "${rest[@]:-}" ;;
-  disconnect | d) cmd_disconnect ;;
-  status | s) cmd_status ;;
-  check | rr) cmd_check ;;
-  qb) cmd_qb "${rest[@]:-}" ;;
-  pf) cmd_pf "${rest[@]:-}" ;;
-  dns) cmd_dns "${rest[@]:-}" ;;
-  diag) cmd_diag "${rest[@]:-}" ;;
-  validate) cmd_validate "${rest[@]:-}" ;;
-  iface-scan) cmd_iface_scan ;;
-  rename-sc) cmd_rename_sc ;;
-  rename-pf) cmd_rename_pf ;;
-  killswitch) cmd_killswitch "${rest[@]:-}" ;;
-  reset) cmd_reset ;;
-  init) cmd_init "${rest[@]:-}" ;;
-  monitor) cmd_monitor ;;
-  help | -h | --help | "") usage ;;
-  *)
-    usage
-    exit 1
-    ;;
+    connect | c) cmd_connect "${rest[@]:-}" ;;
+    reconnect | r) cmd_reconnect "${rest[@]:-}" ;;
+    disconnect | d) cmd_disconnect ;;
+    status | s) cmd_status ;;
+    check | rr) cmd_check ;;
+    qb) cmd_qb "${rest[@]:-}" ;;
+    pf) cmd_pf "${rest[@]:-}" ;;
+    dns) cmd_dns "${rest[@]:-}" ;;
+    diag) cmd_diag "${rest[@]:-}" ;;
+    validate) cmd_validate "${rest[@]:-}" ;;
+    iface-scan) cmd_iface_scan ;;
+    rename-sc) cmd_rename_sc ;;
+    rename-pf) cmd_rename_pf ;;
+    killswitch) cmd_killswitch "${rest[@]:-}" ;;
+    reset) cmd_reset ;;
+    init) cmd_init "${rest[@]:-}" ;;
+    monitor) cmd_monitor ;;
+    help | -h | --help | "") usage ;;
+    *)
+      usage
+      exit 1
+      ;;
   esac
 }
 

@@ -7,18 +7,18 @@ CLI_USER=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-  --user=*)
-    CLI_USER="${1#*=}"
-    shift
-    ;;
-  --user)
-    CLI_USER="$2"
-    shift 2
-    ;;
-  *)
-    ARGS+=("$1")
-    shift
-    ;;
+    --user=*)
+      CLI_USER="${1#*=}"
+      shift
+      ;;
+    --user)
+      CLI_USER="$2"
+      shift 2
+      ;;
+    *)
+      ARGS+=("$1")
+      shift
+      ;;
   esac
 done
 set -- "${ARGS[@]}"
@@ -61,8 +61,8 @@ install_natpmpc_unstable() {
   [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 
   echo "[info] Preparing apt sources for Debian unstable (scoped to natpmpc only)..."
-  if ! grep -qsE '^\s*deb .*debian.* unstable ' "$SRC_LIST" 2>/dev/null &&
-    ! grep -RqsE '^\s*deb .*debian.* unstable ' /etc/apt/sources.list* 2>/dev/null; then
+  if ! grep -qsE '^\s*deb .*debian.* unstable ' "$SRC_LIST" 2>/dev/null \
+    && ! grep -RqsE '^\s*deb .*debian.* unstable ' /etc/apt/sources.list* 2>/dev/null; then
     $SUDO tee "$SRC_LIST" >/dev/null <<'EOF'
 deb http://deb.debian.org/debian unstable main
 EOF
@@ -80,8 +80,8 @@ Pin: release a=unstable
 Pin-Priority: 501
 EOF
   else
-    if ! grep -qs 'natpmpc' "$PIN_FILE" ||
-      { ! grep -qs 'libnatpmp1t64' "$PIN_FILE" && ! grep -qs 'libnatpmp1' "$PIN_FILE"; }; then
+    if ! grep -qs 'natpmpc' "$PIN_FILE" \
+      || { ! grep -qs 'libnatpmp1t64' "$PIN_FILE" && ! grep -qs 'libnatpmp1' "$PIN_FILE"; }; then
       $SUDO tee -a "$PIN_FILE" >/dev/null <<'EOF'
 Package: natpmpc libnatpmp1t64 libnatpmp1
 Pin: release a=unstable
@@ -191,8 +191,8 @@ check_sudo_config() {
   fi
 
   if [[ "$RUN_USER" != "root" ]]; then
-    command -v su >/dev/null 2>&1 ||
-      die "sudo not installed and 'su' unavailable to switch to ${RUN_USER}"
+    command -v su >/dev/null 2>&1 \
+      || die "sudo not installed and 'su' unavailable to switch to ${RUN_USER}"
     log "sudo not installed; will fall back to 'su'"
   fi
 }
