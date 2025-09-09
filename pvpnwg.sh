@@ -15,54 +15,85 @@
 # ----------------------------------------------------------------------------------
 set -euo pipefail
 IFS=$'\n\t'
+run_as_user() {
+  if [[ $EUID -eq "$RUN_UID" ]]; then
+    "$@"
+  elif [[ $EUID -eq 0 ]]; then
+    sudo -u "$RUN_USER" "$@"
+  else
+    echo "Error: Cannot run as user $RUN_USER (insufficient privileges)" >&2
+    return 1
+  fi
+}
 
-# Pre-parse for --user flag to set target user early
-CLI_USER=""
-orig_args=("$@")
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --user=*)
-      CLI_USER="${1#*=}"
-      shift
-      ;;
-    --user)
-      CLI_USER="$2"
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-if [[ $EUID -eq 0 && -z "$CLI_USER" && -z "${SUDO_USER:-}" && -z "${PVPNWG_USER:-}" ]]; then
-  echo "Error: please specify --user when running as root" >&2
-  exit 1
-fi
-set -- "${orig_args[@]}"
-
-# ===========================
-# Defaults (derive from invoking user)
-# ===========================
-RUN_USER=""
-if [[ -n "$CLI_USER" ]]; then
-  RUN_USER="$CLI_USER"
-elif [[ -n "${PVPNWG_USER:-}" ]]; then
-  RUN_USER="$PVPNWG_USER"
-elif [[ $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
-  RUN_USER="$SUDO_USER"
+# Determine default user (avoid running as root)
+if [[ $EUID -eq 0 ]]; then
+  DEFAULT_USER="${PVPNWG_USER:-${SUDO_USER:-$(logname 2>/dev/null || echo '')}}"
+  if [[ -z "$DEFAULT_USER" || ( "$DEFAULT_USER" == "root" && -z "${PVPNWG_USER:-${SUDO_USER:-}}" ) ]]; then
+    DEFAULT_USER=$(awk -F: '$3>=1000 && $3<65534 && $6~/^\/home/ {print $1; exit}' /etc/passwd || echo "")
+  fi
+  if [[ -z "$DEFAULT_USER" ]]; then
+    echo "Error: Cannot determine target user. Please specify --user=username" >&2
+    exit 1
+  fi
 else
-  RUN_USER="$(id -un 2>/dev/null || echo root)"
+  DEFAULT_USER="$(id -un)"
 fi
-if ! getent passwd "$RUN_USER" >/dev/null 2>&1; then
-  printf 'Unknown user: %s\n' "$RUN_USER" >&2
-  exit 1
-fi
-RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
-RUN_HOME="${RUN_HOME:-$HOME}"
-RUN_UID="$(id -u "$RUN_USER" 2>/dev/null || echo 0)"
-RUN_GID="$(id -g "$RUN_USER" 2>/dev/null || echo 0)"
-PHOME_DEFAULT="${RUN_HOME}/.pvpnwg"
-CONFIG_DIR_DEFAULT="${PHOME_DEFAULT}/configs"
+
+set_user() {
+  local user="$1"
+  if ! getent passwd "$user" >/dev/null 2>&1; then
+    echo "Unknown user: $user" >&2
+    exit 1
+  fi
+  RUN_USER="$user"
+  RUN_HOME="$(getent passwd "$user" | cut -d: -f6)"
+  RUN_UID="$(id -u "$user")"
+  RUN_GID="$(id -g "$user")"
+  PHOME_DEFAULT="${RUN_HOME}/.pvpnwg"
+  CONFIG_DIR_DEFAULT="${PHOME_DEFAULT}/configs"
+  PHOME="${PHOME_DEFAULT}"
+  CONFIG_DIR="${CONFIG_DIR_DEFAULT}"
+  CONF_FILE="${PHOME}/pvpnwg.conf"
+  CONF_WARN_PERMS=""
+  if [[ -f "$CONF_FILE" ]]; then
+    conf_perms=$(stat -c '%a' "$CONF_FILE" 2>/dev/null || echo "")
+    [[ "$conf_perms" != "600" ]] && CONF_WARN_PERMS="$conf_perms"
+    . "$CONF_FILE"
+  fi
+  if [[ "$PHOME" != "$RUN_HOME" && "$PHOME" != "$RUN_HOME"/* ]]; then
+    PHOME="${PHOME_DEFAULT}"
+  fi
+  CONFIG_DIR="${CONFIG_DIR:-${CONFIG_DIR_DEFAULT}}"
+  if [[ "$CONFIG_DIR" != "$PHOME" && "$CONFIG_DIR" != "$PHOME"/* ]]; then
+    CONFIG_DIR="${CONFIG_DIR_DEFAULT}"
+  fi
+  STATE_DIR="${PHOME}/state"
+  TMP_DIR="${PHOME}/tmp"
+  LOG_FILE="${PHOME}/pvpn.log"
+  TIME_FILE="${STATE_DIR}/last_connect_epoch.txt"
+  PORT_FILE="${STATE_DIR}/mapped_port.txt"
+  PROTON_FWD_FILE="/run/user/${RUN_UID}/Proton/VPN/forwarded_port"
+  GLUETUN_FWD_FILE="/tmp/gluetun/forwarded_port"
+  DNS_BACKUP="${STATE_DIR}/dns_backup.tar"
+  GW_STATE="${STATE_DIR}/gw_state.txt"
+  IFCONF_FILE="${STATE_DIR}/lan_if.txt"
+  COOKIE_JAR="${STATE_DIR}/qb_cookie.txt"
+  MON_FAILS_FILE="${STATE_DIR}/monitor_fail_count.txt"
+  PF_HISTORY="${STATE_DIR}/pf_history.tsv" # ts\tprivate\tpublic\tgw\tstatus
+  PF_JITTER_FILE="${STATE_DIR}/pf_jitter_count.txt"
+  HANDSHAKE_FILE="${STATE_DIR}/last_handshake.txt"
+  export PHOME CONFIG_DIR
+}
+
+prepare_paths() {
+  run_as_user mkdir -p "$PHOME" "$STATE_DIR" "$TMP_DIR" "$CONFIG_DIR"
+  run_as_user touch "$LOG_FILE" "$TIME_FILE" "$PORT_FILE" "$COOKIE_JAR" \
+    "$MON_FAILS_FILE" "$PF_HISTORY" "$PF_JITTER_FILE" "$HANDSHAKE_FILE"
+}
+
+set_user "$DEFAULT_USER"
+
 IFACE_DEFAULT="pvpnwg0"
 LAN_IF_DEFAULT="eth0"
 TIME_LIMIT_SECS_DEFAULT=$((8 * 3600))
@@ -87,31 +118,6 @@ DNS_LAT_MS_DEFAULT=250
 QBIT_HEALTH_DEFAULT=true
 LOG_MAX_BYTES_DEFAULT=$((1024 * 1024))
 
-# ===========================
-# Config / Env
-# ===========================
-# Only honor PHOME if it lives under the target user's home
-if [[ -n "${PHOME:-}" && "$PHOME" != "$RUN_HOME" && "$PHOME" != "$RUN_HOME"/* ]]; then
-  unset PHOME
-fi
-PHOME="${PHOME:-${PHOME_DEFAULT}}"
-CONF_FILE="${PHOME}/pvpnwg.conf"
-CONF_WARN_PERMS=""
-if [[ -f "$CONF_FILE" ]]; then
-  conf_perms=$(stat -c '%a' "$CONF_FILE" 2>/dev/null || echo "")
-  [[ "$conf_perms" != "600" ]] && CONF_WARN_PERMS="$conf_perms"
-  # shellcheck disable=SC1090
-  . "$CONF_FILE"
-fi
-# Re-validate PHOME in case config file changed it
-if [[ "$PHOME" != "$RUN_HOME" && "$PHOME" != "$RUN_HOME"/* ]]; then
-  PHOME="${PHOME_DEFAULT}"
-fi
-CONFIG_DIR="${CONFIG_DIR:-${CONFIG_DIR_DEFAULT}}"
-if [[ "$CONFIG_DIR" != "$PHOME" && "$CONFIG_DIR" != "$PHOME"/* ]]; then
-  CONFIG_DIR="${CONFIG_DIR_DEFAULT}"
-fi
-export PHOME CONFIG_DIR
 IFACE="${IFACE:-${IFACE_DEFAULT}}"
 TARGET_CONF="${TARGET_CONF:-/etc/wireguard/${IFACE}.conf}"
 LAN_IF="${LAN_IF:-${LAN_IF_DEFAULT}}"
@@ -138,48 +144,10 @@ LOG_MAX_BYTES="${LOG_MAX_BYTES:-${LOG_MAX_BYTES_DEFAULT}}"
 
 if [[ -n "${PF_PROTO_LIST:-}" ]]; then IFS=', ' read -r -a PF_PROTO_LIST <<<"${PF_PROTO_LIST}"; else PF_PROTO_LIST=("${PF_PROTO_LIST_DEFAULT[@]}"); fi
 
-# Run command as target user when invoked via sudo
-run_as_user() {
-  if [[ $EUID -eq "$RUN_UID" ]]; then
-    "$@"
-  elif command -v sudo >/dev/null 2>&1; then
-    sudo -n -u "#$RUN_UID" "$@"
-  elif command -v su >/dev/null 2>&1; then
-    local target
-    target="$(getent passwd "$RUN_UID" | cut -d: -f1 || true)"
-    target="${target:-$RUN_UID}"
-    su -s /bin/sh "$target" -c "$(printf '%q ' "$@")"
-  else
-    die "Unable to run command as UID $RUN_UID: missing sudo and su"
-  fi
-}
-
-# ===========================
-# Runtime & paths
-# ===========================
 VERBOSE=0
 DRY_RUN=0
-STATE_DIR="${PHOME}/state"
-TMP_DIR="${PHOME}/tmp"
-LOG_FILE="${PHOME}/pvpn.log"
-TIME_FILE="${STATE_DIR}/last_connect_epoch.txt"
-PORT_FILE="${STATE_DIR}/mapped_port.txt"
-PROTON_FWD_FILE="/run/user/${RUN_UID}/Proton/VPN/forwarded_port"
-GLUETUN_FWD_FILE="/tmp/gluetun/forwarded_port"
-DNS_BACKUP="${STATE_DIR}/dns_backup.tar"
-GW_STATE="${STATE_DIR}/gw_state.txt"
-IFCONF_FILE="${STATE_DIR}/lan_if.txt"
-COOKIE_JAR="${STATE_DIR}/qb_cookie.txt"
-MON_FAILS_FILE="${STATE_DIR}/monitor_fail_count.txt"
-PF_HISTORY="${STATE_DIR}/pf_history.tsv" # ts\tprivate\tpublic\tgw\tstatus
 PF_HISTORY_MAX=$((100 * 1024))
 PF_HISTORY_KEEP=3
-PF_JITTER_FILE="${STATE_DIR}/pf_jitter_count.txt"
-HANDSHAKE_FILE="${STATE_DIR}/last_handshake.txt"
-
-run_as_user mkdir -p "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
-run_as_user touch "$LOG_FILE" "$TIME_FILE" "$PORT_FILE" "$COOKIE_JAR" \
-  "$MON_FAILS_FILE" "$PF_HISTORY" "$PF_JITTER_FILE" "$HANDSHAKE_FILE"
 
 # ===========================
 # Logging helpers
@@ -215,7 +183,17 @@ _run() {
   if [[ $VERBOSE -eq 1 || $DRY_RUN -eq 1 ]]; then log "+" "$@"; fi
   [[ $DRY_RUN -eq 1 ]] || "$@"
 }
-need_root() { [[ ${EUID} -eq 0 ]] || die "Passwordless sudo required."; }
+need_root() {
+  if [[ ${EUID} -eq 0 ]]; then
+    return 0
+  elif sudo -n true 2>/dev/null; then
+    log "INFO: Will use sudo for privileged operations"
+    return 0
+  else
+    log "ERROR: Root privileges required. Run with sudo or configure passwordless sudo."
+    return 1
+  fi
+}
 
 check_deps() {
   local -a req=(ip wg wg-quick curl jq awk sed grep ping natpmpc)
@@ -235,7 +213,6 @@ check_deps() {
 }
 
 # Warn if config permissions are too permissive
-[[ -n "${CONF_WARN_PERMS}" ]] && log "WARN: $CONF_FILE permissions are ${CONF_WARN_PERMS}; expected 600"
 
 # ===========================
 # DNS & routing state
@@ -1725,7 +1702,7 @@ EOF
 }
 
 parse_globals() {
-  local args=()
+  GLOBAL_ARGS=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -v | --verbose)
@@ -1737,11 +1714,11 @@ parse_globals() {
         shift
         ;;
       --user=*)
-        CLI_USER="${1#*=}"
+        set_user "${1#*=}"
         shift
         ;;
       --user)
-        CLI_USER="$2"
+        set_user "$2"
         shift 2
         ;;
       --pf-proto=*)
@@ -1757,24 +1734,37 @@ parse_globals() {
         break
         ;;
       *)
-        args+=("$1")
+        GLOBAL_ARGS+=("$1")
         shift
         ;;
     esac
   done
-  printf '%s\n' "${args[@]}"
+  GLOBAL_ARGS+=("$@")
 }
 
 main() {
-  mapfile -t rest < <(parse_globals "$@")
-  local cmd="${rest[0]:-}"
-  rest=("${rest[@]:1}")
-  if [[ "$cmd" != "init" ]]; then
-    need_root
-    check_deps
-    iface_load
-    detect_dns_backend
-  fi
+  parse_globals "$@"
+  local cmd="${GLOBAL_ARGS[0]:-}"
+  local rest=("${GLOBAL_ARGS[@]:1}")
+  prepare_paths
+  [[ -n "${CONF_WARN_PERMS}" ]] && log "WARN: $CONF_FILE permissions are ${CONF_WARN_PERMS}; expected 600"
+  case "$cmd" in
+    connect|c|reconnect|r|disconnect|d|status|s|check|rr|pf|dns|iface_scan|rename_sc|rename_pf|killswitch|reset|monitor)
+      need_root || exit 1
+      check_deps
+      iface_load
+      detect_dns_backend
+      ;;
+    init)
+      ;; # skip root check and heavy deps for init
+    help|-h|--help|"")
+      ;; # no deps or root check for help/empty
+    *)
+      check_deps
+      iface_load
+      detect_dns_backend
+      ;;
+  esac
   case "$cmd" in
     connect | c) cmd_connect "${rest[@]:-}" ;;
     reconnect | r) cmd_reconnect "${rest[@]:-}" ;;
