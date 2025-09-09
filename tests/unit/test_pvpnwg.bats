@@ -372,6 +372,7 @@ case "$1" in
         exit 0
         ;;
 esac
+ARGS_LOG="${ARGS_LOG:-}"
 while [[ "$1" ]]; do
   case "$1" in
     -g) gateway="$2"; shift 2 ;;
@@ -379,8 +380,15 @@ while [[ "$1" ]]; do
     *) shift ;;
   esac
 done
+if [[ -n "$ARGS_LOG" ]]; then
+  echo "$int $ext" >> "$ARGS_LOG"
+fi
 if [[ "$gateway" == "10.2.0.1" ]]; then
-  echo "Mapped public port 12345 to local port ${int} using ${proto^^}"
+  if [[ -n "$NATPMP_MISMATCH" && "$proto" == "tcp" ]]; then
+    echo "Mapped public port 54321 to local port ${int} using ${proto^^}"
+  else
+    echo "Mapped public port 12345 to local port ${int} using ${proto^^}"
+  fi
   exit 0
 elif [[ "$gateway" == "192.168.1.1" ]]; then
   echo "External IP not found, try again later"
@@ -391,6 +399,9 @@ else
 fi
 EOF
     chmod +x "$TEST_TMPDIR/natpmpc"
+    ARGS_LOG="$TEST_TMPDIR/natpmpc_args.log"
+    : > "$ARGS_LOG"
+    export ARGS_LOG
     export PATH="$TEST_TMPDIR:$PATH"
 }
 
@@ -424,6 +435,53 @@ EOF
 
     function qb_set_port() { echo "qB set to $1"; }
     export -f qb_set_port
+
+    run pf_request_once
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$STATE_DIR/mapped_port.txt")" == "12345" ]]
+}
+
+@test "pf_request_once renew uses mapped port for both args" {
+    create_mock_natpmpc
+
+    function qb_set_port() { echo "qB set to $1"; }
+    export -f qb_set_port
+
+    run pf_request_once
+    [ "$status" -eq 0 ]
+    mapfile -t lines <"$ARGS_LOG"
+    [[ "${lines[-2]}" == "1 0" ]]
+    [[ "${lines[-1]}" == "1 0" ]]
+
+    run pf_request_once
+    [ "$status" -eq 0 ]
+    mapfile -t lines <"$ARGS_LOG"
+    [[ "${lines[-2]}" == "12345 12345" ]]
+    [[ "${lines[-1]}" == "12345 12345" ]]
+}
+
+@test "pf_request_once prefers UDP port when TCP differs" {
+    create_mock_natpmpc
+
+    function qb_set_port() { echo "qB set to $1"; }
+    export -f qb_set_port
+    export NATPMP_MISMATCH=1
+    export PF_REQUIRE_BOTH=true
+
+    run pf_request_once
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$STATE_DIR/mapped_port.txt")" == "12345" ]]
+    [[ "$output" == *"different UDP (12345) and TCP (54321) ports"* ]]
+}
+
+@test "pf_request_once continues when pf_record fails" {
+    create_mock_natpmpc
+
+    function qb_set_port() { echo "qB set to $1"; }
+    export -f qb_set_port
+
+    function pf_record() { return 1; }
+    export -f pf_record
 
     run pf_request_once
     [ "$status" -eq 0 ]
