@@ -711,9 +711,10 @@ qb_login() {
   else
     install -m 600 /dev/null "$COOKIE_JAR"
   fi
-  if ! printf 'username=%s&password=%s' "$WEBUI_USER" "$WEBUI_PASS" |
-    curl -sS --fail --connect-timeout 10 -c "$COOKIE_JAR" \
-      --data-binary @- "${WEBUI_URL%/}/api/v2/auth/login" >/dev/null; then
+  if ! curl -sS --fail --connect-timeout 10 -c "$COOKIE_JAR" \
+      --data-urlencode "username=${WEBUI_USER}" \
+      --data-urlencode "password=${WEBUI_PASS}" \
+      "${WEBUI_URL%/}/api/v2/auth/login" >/dev/null; then
     log "WARN: qBittorrent WebUI login failed"
     return 1
   fi

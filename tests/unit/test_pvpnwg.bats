@@ -416,6 +416,45 @@ EOF
 }
 
 # ===========================
+# qBittorrent login tests
+# ===========================
+
+@test "qb_login handles special characters in credentials" {
+    port=18080
+    req_file="$BATS_TMPDIR/login_req.txt"
+    cat > "$TEST_TMPDIR/mock_login_server.py" <<'PY'
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import sys
+out_file = sys.argv[2]
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode()
+        with open(out_file, 'w') as f:
+            f.write(body)
+        self.send_response(200)
+        self.send_header('Set-Cookie', 'SID=1')
+        self.end_headers()
+        self.wfile.write(b'OK')
+    def log_message(self, format, *args):
+        pass
+if __name__ == '__main__':
+    HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+PY
+    python "$TEST_TMPDIR/mock_login_server.py" "$port" "$req_file" &
+    server_pid=$!
+    sleep 1
+    export WEBUI_URL="http://127.0.0.1:$port"
+    export WEBUI_USER='user&name'
+    export WEBUI_PASS='pass%word'
+    run qb_login
+    kill "$server_pid"
+    wait "$server_pid" 2>/dev/null || true
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$req_file")" == "username=user%26name&password=pass%25word" ]]
+}
+
+# ===========================
 # Integration tests (require mocks)
 # ===========================
 
