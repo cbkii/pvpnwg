@@ -3,8 +3,7 @@
 # ----------------------------------------------------------------------------------
 # Gluetun-style PF sync: stable NAT-PMP renew loop that keeps qB's listen_port in
 # sync with the CURRENT public mapping, never clobbers it on transient failures,
-# and uses opinionated Proton defaults (DNS 10.2.0.1; WG subnet 10.2.0.0/16 with
-# gw fallback 10.2.0.1). Everything remains single-file, Bash-only.
+# and uses Proton defaults (WG subnet 10.2.0.0/16 with NAT-PMP gateway 10.2.0.1).
 # ----------------------------------------------------------------------------------
 # Enhanced Features:
 #  • WG health recovery (handshake age, link state, endpoint latency)
@@ -17,43 +16,37 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# Pre-parse --user to allow overriding invoking user
-RUN_USER=""
-orig_args=("$@")
-i=0
-while (( i < ${#orig_args[@]} )); do
-  arg="${orig_args[i]}"
+
+# Pre-parse for --user flag to set target user early
+CLI_USER=""
+for arg in "$@"; do
   case "$arg" in
-    --user)
-      RUN_USER="${orig_args[i+1]:-}"
-      orig_args=("${orig_args[@]:0:i}" "${orig_args[@]:i+2}")
-      break
-      ;;
-    --user=*)
-      RUN_USER="${arg#--user=}"
-      orig_args=("${orig_args[@]:0:i}" "${orig_args[@]:i+1}")
-      break
-      ;;
-    *)
-      ((i+=1))
-      ;;
+    --user=*) CLI_USER="${arg#*=}" ;;
   esac
 done
-set -- "${orig_args[@]}"
 
 # ===========================
 # Defaults (derive from invoking user)
 # ===========================
-if [[ -z "$RUN_USER" ]]; then
-  if [[ ${EUID} -eq 0 && -n "${SUDO_USER:-}" ]]; then
-    RUN_USER="$SUDO_USER"
-  else
-    RUN_USER="$(id -un 2>/dev/null || echo root)"
+RUN_USER=""
+if [[ -n "$CLI_USER" ]]; then
+  RUN_USER="$CLI_USER"
+elif [[ -n "${PVPNWG_USER:-}" ]]; then
+  RUN_USER="$PVPNWG_USER"
+elif [[ -n "${SUDO_USER:-}" ]]; then
+  RUN_USER="$SUDO_USER"
+else
+  cur="$(id -un 2>/dev/null || echo root)"
+  if [[ "$cur" == "root" ]]; then
+    printf '%s\n' "ERROR: specify target user with --user=NAME or PVPNWG_USER." >&2
+    exit 1
   fi
+  RUN_USER="$cur"
 fi
-user_entry=$(getent passwd "$RUN_USER") || { echo "Unknown user: $RUN_USER" >&2; exit 1; }
-IFS=: read -r _ _ RUN_UID RUN_GID _ RUN_HOME _ <<<"$user_entry"
-
+RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+RUN_HOME="${RUN_HOME:-$HOME}"
+RUN_UID="$(id -u "$RUN_USER" 2>/dev/null || echo 0)"
+RUN_GID="$(id -g "$RUN_USER" 2>/dev/null || echo 0)"
 PHOME_DEFAULT="${RUN_HOME}/.pvpnwg"
 CONFIG_DIR_DEFAULT="${PHOME_DEFAULT}/configs"
 IFACE_DEFAULT="pvpnwg0"
@@ -64,10 +57,12 @@ WEBUI_URL_DEFAULT="http://192.168.1.50:8080"
 WEBUI_USER_DEFAULT="admin"
 WEBUI_PASS_DEFAULT="change_me"
 QB_CONF_PATH_DEFAULT="${RUN_HOME}/.config/qBittorrent/qBittorrent.conf"
+
 PF_GATEWAY_FALLBACK_DEFAULT="10.2.0.1"
 PF_RENEW_SECS_DEFAULT=45
 PF_STATIC_FALLBACK_PORT_DEFAULT=51820
 PF_PROTO_LIST_DEFAULT=("udp" "tcp")
+PF_REQUIRE_BOTH_DEFAULT=true
 KILLSWITCH_DEFAULT_DEFAULT=false
 LOG_JSON_DEFAULT=false
 LATENCY_THRESHOLD_MS_DEFAULT=400
@@ -93,7 +88,7 @@ if [[ -f "$CONF_FILE" ]]; then
 fi
 CONFIG_DIR="${CONFIG_DIR:-${CONFIG_DIR_DEFAULT}}"
 IFACE="${IFACE:-${IFACE_DEFAULT}}"
-TARGET_CONF="/etc/wireguard/${IFACE}.conf"
+TARGET_CONF="${TARGET_CONF:-/etc/wireguard/${IFACE}.conf}"
 LAN_IF="${LAN_IF:-${LAN_IF_DEFAULT}}"
 TIME_LIMIT_SECS="${TIME_LIMIT_SECS:-${TIME_LIMIT_SECS_DEFAULT}}"
 DL_THRESHOLD_KBPS="${DL_THRESHOLD_KBPS:-${DL_THRESHOLD_KBPS_DEFAULT}}"
@@ -101,9 +96,9 @@ WEBUI_URL="${WEBUI_URL:-${WEBUI_URL_DEFAULT}}"
 WEBUI_USER="${WEBUI_USER:-${WEBUI_USER_DEFAULT}}"
 WEBUI_PASS="${WEBUI_PASS:-${WEBUI_PASS_DEFAULT}}"
 QB_CONF_PATH="${QB_CONF_PATH:-${QB_CONF_PATH_DEFAULT}}"
-PF_GATEWAY_FALLBACK="${PF_GATEWAY_FALLBACK:-${PF_GATEWAY_FALLBACK_DEFAULT}}"
 PF_RENEW_SECS="${PF_RENEW_SECS:-${PF_RENEW_SECS_DEFAULT}}"
 PF_STATIC_FALLBACK_PORT="${PF_STATIC_FALLBACK_PORT:-${PF_STATIC_FALLBACK_PORT_DEFAULT}}"
+PF_REQUIRE_BOTH="${PF_REQUIRE_BOTH:-${PF_REQUIRE_BOTH_DEFAULT}}"
 KILLSWITCH_DEFAULT="${KILLSWITCH_DEFAULT:-${KILLSWITCH_DEFAULT_DEFAULT}}"
 LOG_JSON="${LOG_JSON:-${LOG_JSON_DEFAULT}}"
 LATENCY_THRESHOLD_MS="${LATENCY_THRESHOLD_MS:-${LATENCY_THRESHOLD_MS_DEFAULT}}"
@@ -117,34 +112,42 @@ LOG_MAX_BYTES="${LOG_MAX_BYTES:-${LOG_MAX_BYTES_DEFAULT}}"
 
 if [[ -n "${PF_PROTO_LIST:-}" ]]; then IFS=', ' read -r -a PF_PROTO_LIST <<<"${PF_PROTO_LIST}"; else PF_PROTO_LIST=("${PF_PROTO_LIST_DEFAULT[@]}"); fi
 
+# Run command as target user when invoked via sudo
+run_as_user() {
+  if [[ $EUID -eq "$RUN_UID" ]]; then
+    "$@"
+  else
+    sudo -u "#$RUN_UID" "$@"
+  fi
+}
+
 # ===========================
 # Runtime & paths
 # ===========================
 VERBOSE=0
 DRY_RUN=0
-BIN_SELF="$(readlink -f "$0" || echo "$0")"
 STATE_DIR="${PHOME}/state"
 TMP_DIR="${PHOME}/tmp"
 LOG_FILE="${PHOME}/pvpn.log"
 TIME_FILE="${STATE_DIR}/last_connect_epoch.txt"
 PORT_FILE="${STATE_DIR}/mapped_port.txt"
+PROTON_FWD_FILE="/run/user/${RUN_UID}/Proton/VPN/forwarded_port"
+GLUETUN_FWD_FILE="/tmp/gluetun/forwarded_port"
 DNS_BACKUP="${STATE_DIR}/dns_backup.tar"
 GW_STATE="${STATE_DIR}/gw_state.txt"
 IFCONF_FILE="${STATE_DIR}/lan_if.txt"
 COOKIE_JAR="${STATE_DIR}/qb_cookie.txt"
-PF_GW_CACHE="${STATE_DIR}/pf_gateway.txt"
 MON_FAILS_FILE="${STATE_DIR}/monitor_fail_count.txt"
 PF_HISTORY="${STATE_DIR}/pf_history.tsv" # ts\tprivate\tpublic\tgw\tstatus
+PF_HISTORY_MAX=$((100*1024))
+PF_HISTORY_KEEP=3
 PF_JITTER_FILE="${STATE_DIR}/pf_jitter_count.txt"
 HANDSHAKE_FILE="${STATE_DIR}/last_handshake.txt"
 
-if [[ ${EUID} -eq 0 ]]; then
-  install -d -m 700 -o "${RUN_UID}" -g "${RUN_GID}" "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
-  [[ -f "${LOG_FILE}" ]] || install -m 600 -o "${RUN_UID}" -g "${RUN_GID}" /dev/null "${LOG_FILE}"
-else
-  install -d -m 700 "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
-  [[ -f "${LOG_FILE}" ]] || install -m 600 /dev/null "${LOG_FILE}"
-fi
+run_as_user mkdir -p "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
+run_as_user touch "$LOG_FILE" "$TIME_FILE" "$PORT_FILE" "$COOKIE_JAR" \
+  "$MON_FAILS_FILE" "$PF_HISTORY" "$PF_JITTER_FILE" "$HANDSHAKE_FILE"
+
 
 # ===========================
 # Logging helpers
@@ -180,11 +183,11 @@ _run() {
   if [[ $VERBOSE -eq 1 || $DRY_RUN -eq 1 ]]; then log "+" "$@"; fi
   [[ $DRY_RUN -eq 1 ]] || "$@"
 }
-need_root() { [[ ${EUID} -eq 0 ]] || die "Run as root (sudo). Passwordless sudo required."; }
+need_root() { [[ ${EUID} -eq 0 ]] || die "Passwordless sudo required."; }
 
 check_deps() {
-  local -a req=(ip wg wg-quick curl jq awk sed grep ping)
-  local -a opt=(natpmpc vnstat nft resolvconf dig drill iptables)
+  local -a req=(ip wg wg-quick curl jq awk sed grep ping natpmpc)
+  local -a opt=(vnstat nft resolvconf dig drill iptables)
   local miss=0
   for b in "${req[@]}"; do command -v "$b" >/dev/null 2>&1 || {
     log "Missing required tool: $b"
@@ -192,8 +195,10 @@ check_deps() {
   }; done
   [[ $miss -eq 1 ]] && die "Install missing required tools and try again."
   for b in "${opt[@]}"; do command -v "$b" >/dev/null 2>&1 || vlog "Optional tool not found (OK): $b"; done
-  if command -v natpmpc >/dev/null 2>&1; then
-    if ! natpmpc -v 2>&1 | grep -Eq '([0-9]{4}-[0-9]{2}-[0-9]{2})'; then log "WARN: natpmpc version unknown/old; PF may be flaky (non-blocking)"; fi
+  local npv
+  npv=$(natpmpc -v 2>&1 | grep -oE '[0-9]{8}' | head -1 || echo "")
+  if [[ -z "$npv" || "$npv" -lt 20230423 ]]; then
+    die "natpmpc >=20230423 required (found ${npv:-unknown})"
   fi
 }
 
@@ -254,7 +259,7 @@ dns_dedupe() {
 }
 
 dns_latency_test() {
-  local resolver="${1:-10.2.0.1}" target="${2:-google.com}"
+  local resolver="${1:-$(wg_conf_dns | awk '{print $1}' | head -1)}" target="${2:-google.com}"
   if ! command -v dig >/dev/null 2>&1; then
     vlog "dig not available for DNS latency test"
     return 1
@@ -265,8 +270,12 @@ dns_latency_test() {
     vlog "No WG IP for DNS latency test"
     return 1
   fi
-  local output
-  output=$(dig +stats -4 -b "$wg_ip" "$target" @"$resolver" 2>&1 || true)
+  local output rc
+  if ! output=$(timeout 5 dig +stats -4 -b "$wg_ip" "$target" @"$resolver" 2>&1); then
+    rc=$?
+    vlog "dig to $resolver for $target failed (rc=$rc)"
+    return 1
+  fi
   local query_time
   query_time=$(echo "$output" | awk '/Query time:/{print $4}' | head -1)
   if [[ -n "$query_time" && "$query_time" =~ ^[0-9]+$ ]]; then
@@ -284,9 +293,27 @@ cmd_dns() {
     set)
       case "${2:-}" in
         proton)
-          printf '%s\n' "nameserver 10.2.0.1" >"$TMP_DIR/resolv.conf.new"
-        _run cp -f "$TMP_DIR/resolv.conf.new" /etc/resolv.conf
-          log "DNS set to Proton (10.2.0.1)"
+          detect_dns_backend
+          local dns_servers
+          dns_servers=$(wg_conf_dns | tr ',' ' ' | xargs -n1 | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | xargs)
+          if [[ -z "$dns_servers" ]]; then
+            log "WARN: no IPv4 DNS in $TARGET_CONF"
+            return 1
+          fi
+          if [[ "$dns_backend" == "systemd-resolved" ]]; then
+            for d in $dns_servers; do _run resolvectl dns "$IFACE" "$d" || true; done
+            _run resolvectl domain "$IFACE" "~." || true
+            log "DNS(v4): set on $IFACE via systemd-resolved"
+          else
+            if [[ -L /etc/resolv.conf ]]; then
+              log "INFO: /etc/resolv.conf is a symlink; skipping write"
+            else
+              : >"$TMP_DIR/resolv.conf.new"
+              for d in $dns_servers; do printf 'nameserver %s\n' "$d" >>"$TMP_DIR/resolv.conf.new"; done
+              _run cp -f "$TMP_DIR/resolv.conf.new" /etc/resolv.conf
+              log "DNS set to Proton (${dns_servers})"
+            fi
+          fi
           ;;
         system)
           dns_restore || true
@@ -307,7 +334,7 @@ cmd_dns() {
       ;;
     latency)
       local ms
-      ms=$(dns_latency_test "${2:-10.2.0.1}" "${3:-google.com}" || echo "")
+      ms=$(dns_latency_test "${2:-}" "${3:-google.com}" || echo "")
       if [[ -n "$ms" ]]; then echo "DNS latency: ${ms}ms"; else echo "DNS latency: unavailable"; fi
       ;;
     *)
@@ -329,7 +356,16 @@ iface_scan() {
   echo "Interfaces:"
   ip -o link show | awk -F': ' '$2!="lo"{print $2}' | sed 's/@.*//'
   read -rp "Use interface [${LAN_IF}]: " ans
-  [[ -n "${ans:-}" ]] && LAN_IF="$ans" && iface_save || vlog "Keep $LAN_IF"
+  if [[ -n "${ans:-}" ]]; then
+    local prev="$LAN_IF"
+    LAN_IF="$ans"
+    iface_save || {
+      LAN_IF="$prev"
+      vlog "Keep $LAN_IF"
+    }
+  else
+    vlog "Keep $LAN_IF"
+  fi
 }
 
 # ===========================
@@ -402,10 +438,12 @@ conf_validate() {
     vlog "WARN: AllowedIPs doesn't contain 0.0.0.0/0 in $file"
   fi
 
-  # Test wg-quick parsing
-  if ! wg-quick strip "$file" >/dev/null 2>&1; then
-    echo "wg-quick parse failed"
-    ((errors++))
+  # Test wg-quick parsing if available
+  if command -v wg-quick >/dev/null 2>&1; then
+    if ! wg-quick strip "$file" >/dev/null 2>&1; then
+      echo "wg-quick parse failed"
+      ((errors++))
+    fi
   fi
 
   if [[ $errors -eq 0 ]]; then
@@ -422,7 +460,16 @@ conf_validate() {
 is_secure_core_name() {
   local n="$1"
   shopt -s nocasematch
-  [[ "$n" == *88.conf || "$n" == *sc*.conf || "$n" == *secure*core*.conf ]]
+  [[ "$n" == *SC.conf || "$n" == *sc*.conf || "$n" == *secure*core*.conf ]]
+  local r=$?
+  shopt -u nocasematch
+  return $r
+}
+
+is_pf_name() {
+  local n="$1"
+  shopt -s nocasematch
+  [[ "$n" == *PF.conf || "$n" == *pf*.conf || "$n" == *port*forward*.conf ]]
   local r=$?
   shopt -u nocasematch
   return $r
@@ -431,7 +478,25 @@ conf_endpoint_host() {
   local f="$1"
   awk -F'=' '/^\s*Endpoint\s*=/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}' "$f" | awk -F':' '{print $1; exit}'
 }
-ping_rtt_ms() { ping -c1 -W1 "$1" 2>/dev/null | awk -F'=' '/time=/{print $NF}' | awk '{print $1}' | sed 's/ms//' || echo 9999; }
+ping_rtt_ms() {
+  local host="$1" start end now last
+  start=$(date +%s%N)
+  if getent ahostsv4 "$host" >/dev/null 2>&1; then
+    end=$(date +%s%N)
+    echo $(((end-start)/1000000))
+    return
+  fi
+  now=$(date +%s)
+  last=$(cat "$STATE_DIR/ping_token.txt" 2>/dev/null || echo 0)
+  if (( now - last < 5 )); then
+    echo 9999
+    return
+  fi
+  local out
+  out=$(ping -4 -c1 -W1 "$host" 2>/dev/null) || { echo 9999; return; }
+  echo "$now" >"$STATE_DIR/ping_token.txt"
+  echo "$out" | awk -F'=' '/time=/{print $NF}' | awk '{print $1}' | sed 's/ms//' || echo 9999
+}
 
 select_conf() {
   local mode="${1:-p2p}" cc="${2:-}" best_conf="" best_rtt=999999 valid_count=0
@@ -446,9 +511,15 @@ select_conf() {
     printf "%-25s %-20s %-8s %-10s\n" "FILE" "HOST" "RTT" "VALID"
   fi
 
-  for f in "${files[@]}"; do
-    local base="$(basename "$f")"
-    case "$mode" in p2p) is_secure_core_name "$base" && continue ;; sc) is_secure_core_name "$base" || continue ;; any) : ;; esac
+    for f in "${files[@]}"; do
+      local base
+      base="$(basename "$f")"
+      case "$mode" in
+        p2p) is_secure_core_name "$base" && continue ;;
+        sc)  is_secure_core_name "$base" || continue ;;
+        pf)  is_pf_name "$base" || continue ;;
+        any) : ;;
+      esac
     [[ -n "$cc" && "$base" != *"$cc"* ]] && continue
 
     # Validate config first
@@ -490,6 +561,7 @@ wg_up() {
   local conf="$1"
 _run mkdir -p /etc/wireguard
 _run cp -f "$conf" "$TARGET_CONF"
+conf_strip_ipv6_allowedips
 _run wg-quick down "$IFACE" >/dev/null 2>&1 || true
 _run wg-quick up "$IFACE"
   date +%s >"$TIME_FILE"
@@ -525,8 +597,22 @@ wg_endpoint_host() {
   wg show "$IFACE" endpoints 2>/dev/null | awk '{print $2}' | awk -F':' '{print $1; exit}'
 }
 
+wg_conf_dns() {
+  awk -F'=' '/^\s*DNS\s*=/{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}' "$TARGET_CONF" 2>/dev/null
+}
+
+conf_strip_ipv6_allowedips() {
+  sed -i -E 's/,\s*::\/0//; s/^AllowedIPs\s*=\s*::\/0\s*$//;' "$TARGET_CONF"
+}
+
 wg_link_state() {
-  ip link show "$IFACE" 2>/dev/null | awk '/state/{print $9; exit}' || echo "UNKNOWN"
+  local a b
+  a=$(ip link show "$IFACE" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="state"){print $(i+1); exit}}')
+  b=$(ip link show "$IFACE" 2>/dev/null | grep -q " state UP " && echo UP || echo DOWN)
+  if [[ "$a" != "$b" ]]; then
+    log "WARN: link state mismatch (parsed='$a' grep='$b'); trusting grep result"
+  fi
+  [[ "$b" == "UP" ]] && echo UP || echo DOWN
 }
 
 wg_unhealthy_reason() {
@@ -693,30 +779,32 @@ qb_health_check() {
 PF_BACKOFF_START=5
 PF_BACKOFF_MAX=60
 
-pf_detect_gateway() {
-  if [[ -s "$PF_GW_CACHE" ]]; then
-    cat "$PF_GW_CACHE"
+pf_derive_gateway_from_conf() {
+  local dns addr
+  dns=$(awk -F= '/^\s*DNS\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | tr ',' ' ' | xargs -n1 \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+  if [[ -n "$dns" ]]; then
+    echo "$dns"
     return 0
   fi
-  local gw=""
-  local ipcidr
-  ipcidr=$(ip -4 addr show dev "$IFACE" | awk '/inet /{print $2; exit}')
-  if [[ -n "$ipcidr" ]]; then
-    local ip="${ipcidr%/*}"
-    local a b c d
-    IFS='.' read -r a b c d <<<"$ip"
-    [[ -n "$a" && -n "$b" && -n "$c" ]] && gw="${a}.${b}.${c}.1"
+  addr=$(awk -F= '/^\s*Address\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | tr ',' ' ' \
+        | grep -Eo '10\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+  if [[ -n "$addr" ]]; then
+    IFS='.' read -r a b c d <<< "$addr"
+    printf "%s.%s.%s.1\n" "$a" "$b" "$c"
+    return 0
   fi
-  [[ -z "$gw" ]] && gw=$(ip route show default 0.0.0.0/0 dev "$IFACE" 2>/dev/null | awk '/default via/{print $3; exit}' || true)
-  [[ -z "$gw" ]] && gw=$(ip route get 1.1.1.1 oif "$IFACE" 2>/dev/null | awk '/via/{print $3; exit}' || true)
-  [[ -z "$gw" ]] && gw="$PF_GATEWAY_FALLBACK"
-  echo "$gw" | tee "$PF_GW_CACHE"
+  echo "10.2.0.1"
 }
 
-_pf_private_port() {
-  local qp
-  qp=$(qb_get_port 2>/dev/null || true)
-  [[ -n "$qp" && "$qp" != null ]] && echo "$qp" || echo "$PF_STATIC_FALLBACK_PORT"
+pf_detect_gateway() {
+  local derived
+  derived=$(pf_derive_gateway_from_conf)
+  if natpmpc -g "$derived" -a 1 0 udp 10 -q >/dev/null 2>&1; then
+    echo "$derived"
+  else
+    echo "10.2.0.1"
+  fi
 }
 
 pf_parse_status() {
@@ -732,6 +820,18 @@ pf_parse_status() {
   echo error
 }
 
+pf_history_rotate_if_needed() {
+  local size
+  size=$(stat -c '%s' "$PF_HISTORY" 2>/dev/null || echo 0)
+  (( size < PF_HISTORY_MAX )) && return 0
+  local i
+  for i in $(seq $((PF_HISTORY_KEEP-1)) -1 1); do
+    [[ -f "${PF_HISTORY}.$i" ]] && mv "${PF_HISTORY}.$i" "${PF_HISTORY}.$((i+1))"
+  done
+  mv "$PF_HISTORY" "${PF_HISTORY}.1"
+  : >"$PF_HISTORY"
+}
+
 pf_record() {
   local ts pvt pub gw st
   ts=$(date +%s)
@@ -739,6 +839,7 @@ pf_record() {
   pub="$2"
   gw="$3"
   st="$4"
+  pf_history_rotate_if_needed
   echo -e "$ts\t$pvt\t$pub\t$gw\t$st" >>"$PF_HISTORY"
 }
 
@@ -760,90 +861,140 @@ pf_check_jitter() {
 }
 
 pf_request_once() {
-  local private gw lease ok saw_try_again got_public prev
-  private="$(_pf_private_port)"
+  local gw lease prev proto out st new_port="" ok_count=0 need_count saw_try_again=false
   gw="$(pf_detect_gateway)"
   lease=60
-  ok=false
-  saw_try_again=false
-  got_public=""
   prev="$(cat "$PORT_FILE" 2>/dev/null || true)"
-  for proto in "${PF_PROTO_LIST[@]}"; do
-    local out
-    out=$(natpmpc -g "$gw" -a "$private" 0 "$proto" "$lease" 2>&1 || true)
-    vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
-    local st
-    st=$(pf_parse_status "$out")
-    case "$st" in
-      mapped)
-        local p
-        p=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
-        [[ -n "$p" && "$p" != 0 ]] && got_public="$p" && ok=true
-        ;;
-      try_again) saw_try_again=true ;;
-      *) : ;;
-    esac
-  done
-  if $ok; then
-    # Check for jitter and apply stability logic
-    if pf_check_jitter "$got_public" "$prev"; then
-      echo 0 >"$PF_JITTER_FILE" # Reset jitter counter on stable mapping
-    fi
+  need_count=${#PF_PROTO_LIST[@]}
+  [[ "$PF_REQUIRE_BOTH" == false ]] && need_count=1
 
-    if [[ "$got_public" != "$prev" ]]; then
-      echo "$got_public" >"$PORT_FILE"
-      qb_set_port "$got_public" || log "WARN: qB sync to PF public $got_public failed"
-      log "PF mapped: public=$got_public private=$private gw=$gw (updated)"
+  for proto in "${PF_PROTO_LIST[@]}"; do
+    if [[ -n "$prev" ]]; then
+      out=$(natpmpc -g "$gw" -a "$prev" "$prev" "$proto" "$lease" 2>&1 || true)
     else
-      log "PF mapped unchanged: public=$got_public (kept)"
+      out=$(natpmpc -g "$gw" -a 1 0 "$proto" "$lease" 2>&1 || true)
     fi
-    pf_record "$private" "$got_public" "$gw" ok
+    st=$(pf_parse_status "$out")
+    vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
+    if [[ "$st" == mapped ]]; then
+      [[ -z "$new_port" ]] && new_port=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
+      ((ok_count++))
+    elif [[ "$st" == try_again ]]; then
+      saw_try_again=true
+    fi
+  done
+
+  if (( ok_count >= need_count )) && [[ -n "$new_port" ]]; then
+    if pf_check_jitter "$new_port" "$prev"; then echo 0 >"$PF_JITTER_FILE"; fi
+    if [[ "$new_port" != "$prev" ]]; then
+      if qb_set_port "$new_port"; then
+        echo "$new_port" >"$PORT_FILE"
+        mkdir -p "$(dirname "$PROTON_FWD_FILE")" /tmp/gluetun
+        echo "$new_port" >"$PROTON_FWD_FILE"
+        echo "$new_port" >"$GLUETUN_FWD_FILE"
+        log "PF mapped: port=$new_port gw=$gw (updated)"
+      else
+        log "WARN: qB sync to PF port $new_port failed"
+      fi
+    else
+      log "PF mapped unchanged: port=$new_port"
+    fi
+    pf_record "$new_port" "$new_port" "$gw" ok
     return 0
-  else
-    pf_record "$private" 0 "$gw" "$([[ $saw_try_again == true ]] && echo try_again || echo error)"
-    if $saw_try_again; then log "WARN: NAT-PMP TRY AGAIN on $gw (server may not support PF)"; else log "WARN: NAT-PMP failed on $gw"; fi
-    if [[ -z "$prev" ]]; then
-      log "No previous PF port; setting static fallback $PF_STATIC_FALLBACK_PORT"
-      echo "$PF_STATIC_FALLBACK_PORT" >"$PORT_FILE"
-      qb_set_port "$PF_STATIC_FALLBACK_PORT" || true
-    else
-      log "Keeping existing qB/port=$prev until next successful mapping"
-    fi
-    return 1
   fi
+
+  if [[ "$gw" != "10.2.0.1" ]]; then
+    vlog "PF: retrying with static gateway 10.2.0.1"
+    gw="10.2.0.1"
+    ok_count=0; new_port=""; saw_try_again=false
+    for proto in "${PF_PROTO_LIST[@]}"; do
+      if [[ -n "$prev" ]]; then
+        out=$(natpmpc -g "$gw" -a "$prev" "$prev" "$proto" "$lease" 2>&1 || true)
+      else
+        out=$(natpmpc -g "$gw" -a 1 0 "$proto" "$lease" 2>&1 || true)
+      fi
+      st=$(pf_parse_status "$out")
+      vlog "natpmpc($proto gw=$gw) => ${out//$'\n'/ }"
+      if [[ "$st" == mapped ]]; then
+        [[ -z "$new_port" ]] && new_port=$(echo "$out" | awk '/Mapped public port/{print $4; exit}')
+        ((ok_count++))
+      elif [[ "$st" == try_again ]]; then
+        saw_try_again=true
+      fi
+    done
+    if (( ok_count >= need_count )) && [[ -n "$new_port" ]]; then
+      if pf_check_jitter "$new_port" "$prev"; then echo 0 >"$PF_JITTER_FILE"; fi
+      if [[ "$new_port" != "$prev" ]]; then
+        if qb_set_port "$new_port"; then
+          echo "$new_port" >"$PORT_FILE"
+          mkdir -p "$(dirname "$PROTON_FWD_FILE")" /tmp/gluetun
+          echo "$new_port" >"$PROTON_FWD_FILE"
+          echo "$new_port" >"$GLUETUN_FWD_FILE"
+          log "PF mapped: port=$new_port gw=$gw (updated)"
+        else
+          log "WARN: qB sync to PF port $new_port failed"
+        fi
+      else
+        log "PF mapped unchanged: port=$new_port"
+      fi
+      pf_record "$new_port" "$new_port" "$gw" ok
+      return 0
+    fi
+  fi
+
+  pf_record "${prev:-0}" 0 "$gw" "$($saw_try_again && echo try_again || echo error)"
+  if $saw_try_again; then
+    log "WARN: NAT-PMP TRY AGAIN on $gw (server may not support PF)"
+  else
+    log "WARN: NAT-PMP failed on $gw"
+  fi
+  if [[ -z "$prev" ]]; then
+    log "No previous PF port; setting static fallback $PF_STATIC_FALLBACK_PORT"
+    echo "$PF_STATIC_FALLBACK_PORT" >"$PORT_FILE"
+    qb_set_port "$PF_STATIC_FALLBACK_PORT" || true
+  else
+    log "Keeping existing qB/port=$prev until next successful mapping"
+  fi
+  return 1
 }
 
 pf_verify() {
-  local private gw out st
-  private="$(_pf_private_port)"
+  local port gw out st
+  port="$(cat "$PORT_FILE" 2>/dev/null || echo "$PF_STATIC_FALLBACK_PORT")"
   gw="$(pf_detect_gateway)"
-  out=$(natpmpc -g "$gw" -a "$private" 0 udp 30 2>&1 || true)
+  out=$(natpmpc -g "$gw" -a "$port" "$port" udp 30 2>&1 || true)
   st=$(pf_parse_status "$out")
   case "$st" in mapped) echo "PF OK on $gw (udp)" ;; try_again) echo "PF TRY AGAIN on $gw (likely unsupported)" ;; *) echo "PF FAILED on $gw" ;; esac
 }
 
 pf_diag() {
+  local port
+  port="$(cat "$PORT_FILE" 2>/dev/null || echo "$PF_STATIC_FALLBACK_PORT")"
   echo "Gateway: $(pf_detect_gateway)"
-  echo "Private: $(_pf_private_port)"
+  echo "Port: $port"
   echo "Jitter count: $(cat "$PF_JITTER_FILE" 2>/dev/null || echo 0)"
   echo "History (tail):"
   tail -n 10 "$PF_HISTORY" 2>/dev/null || echo "(no history)"
   echo
   echo "natpmpc probe:"
-  natpmpc -g "$(pf_detect_gateway)" -a "$(_pf_private_port)" 0 udp 30 2>&1 || true
+  natpmpc -g "$(pf_detect_gateway)" -a "$port" "$port" udp 30 2>&1 || true
 }
 
 pf_loop() {
   log "PF sync loop start (gw $(pf_detect_gateway), ${PF_RENEW_SECS}s cadence; backoff on failure)"
-  local backoff=$PF_BACKOFF_START
-  while true; do if pf_request_once; then
-    backoff=$PF_BACKOFF_START
-    sleep "$PF_RENEW_SECS"
-  else
-    sleep "$backoff"
-    backoff=$((backoff * 2))
-    [[ $backoff -gt $PF_BACKOFF_MAX ]] && backoff=$PF_BACKOFF_MAX
-  fi; done
+  local backoff=$PF_BACKOFF_START run=true
+  trap 'run=false' INT TERM
+  while $run; do
+    if pf_request_once; then
+      backoff=$PF_BACKOFF_START
+      sleep "$PF_RENEW_SECS"
+    else
+      sleep "$backoff"
+      backoff=$((backoff * 2))
+      [[ $backoff -gt $PF_BACKOFF_MAX ]] && backoff=$PF_BACKOFF_MAX
+    fi
+  done
+  trap - INT TERM
 }
 
 # ===========================
@@ -966,6 +1117,21 @@ monitor_loop() {
 # ===========================
 # Killswitch templates
 # ===========================
+wg_endpoint_rule_add_v4() {
+  local host port ip4
+  if ip link show "$IFACE" >/dev/null 2>&1 && wg show "$IFACE" endpoints | grep -q ':'; then
+    host=$(wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $1; exit}')
+    port=$(wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $2; exit}')
+  else
+    host=$(awk -F= '/^\s*Endpoint\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | awk -F: '{print $1}')
+    port=$(awk -F= '/^\s*Endpoint\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | awk -F: '{print $2}')
+  fi
+  [[ -n $host && -n $port ]] || return 0
+  ip4=$(getent ahostsv4 "$host" | awk '/STREAM/ {print $1; exit}')
+  [[ -n $ip4 ]] || return 0
+  nft add rule inet pvpnwg output oifname "$LAN_IF" ip daddr "$ip4" udp dport "$port" accept || true
+}
+
 # nftables
 killswitch_enable() {
   if ! command -v nft >/dev/null 2>&1; then
@@ -987,6 +1153,7 @@ table inet pvpnwg {
   }
 }
 NFT
+  wg_endpoint_rule_add_v4
 
   log "Killswitch (nft) enabled"
 }
@@ -1012,6 +1179,18 @@ _run iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
 _run iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
 _run iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
 _run iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
+  local host port ip4
+  if ip link show "$IFACE" >/dev/null 2>&1 && wg show "$IFACE" endpoints | grep -q ':'; then
+    host=$(wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $1; exit}')
+    port=$(wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $2; exit}')
+  else
+    host=$(awk -F= '/^\s*Endpoint\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | awk -F: '{print $1}')
+    port=$(awk -F= '/^\s*Endpoint\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | awk -F: '{print $2}')
+  fi
+  if [[ -n $host && -n $port ]]; then
+    ip4=$(getent ahostsv4 "$host" | awk '/STREAM/ {print $1; exit}')
+    [[ -n $ip4 ]] && _run iptables -I OUTPUT 3 -o "$LAN_IF" -p udp -d "$ip4" --dport "$port" -j ACCEPT
+  fi
 _run iptables -P OUTPUT DROP
   log "Killswitch (iptables) enabled"
 }
@@ -1081,9 +1260,10 @@ cmd_diag() {
       echo
       if [[ "$DNS_HEALTH" == "true" ]]; then
         echo "DNS latency tests:"
-        local ms
-        ms=$(dns_latency_test "10.2.0.1" "google.com" 2>/dev/null || echo "failed")
-        echo "  Proton (10.2.0.1): ${ms}ms"
+        local ms resolver
+        resolver=$(wg_conf_dns | awk '{print $1}' | head -1)
+        ms=$(dns_latency_test "$resolver" "google.com" 2>/dev/null || echo "failed")
+        echo "  Proton (${resolver:-unset}): ${ms}ms"
         ms=$(dns_latency_test "8.8.8.8" "google.com" 2>/dev/null || echo "failed")
         echo "  Google (8.8.8.8): ${ms}ms"
       fi
@@ -1135,8 +1315,12 @@ cmd_diag() {
 # ===========================
 cmd_connect() {
   local mode="p2p" cc=""
-  while [[ $# -gt 0 ]]; do case "$1" in -sc | --secure-core)
+  while [[ $# -gt 0 ]]; do case "$1" in -sc | --sc)
     mode="sc"
+    shift
+    ;;
+  -pf | --pf)
+    mode="pf"
     shift
     ;;
   -p2p | --p2p)
@@ -1203,7 +1387,7 @@ cmd_status() {
   if [[ -s "$TIME_FILE" ]]; then
     local last
     last=$(cat "$TIME_FILE")
-    echo "Last connect: $(date -d @\"$last\" '+%F %T') (elapsed $(($(date +%s) - last))s)"
+    echo "Last connect: $(date -d "@$last" '+%F %T') (elapsed $(( $(date +%s) - last ))s)"
   else echo "Last connect: unknown"; fi
   echo
   echo "=== Health ==="
@@ -1310,8 +1494,24 @@ cmd_rename_sc() {
   _ng=$(shopt -p nullglob)
   shopt -s nullglob
   for f in "${CONFIG_DIR}"/*.conf; do
-    if grep -qi 'secure[- ]*core' "$f" && [[ "$f" != *88.conf ]]; then
-      local nf="${f%.conf}88.conf"
+    if grep -qi 'secure[- ]*core' "$f" && [[ "$f" != *SC.conf ]]; then
+      local nf="${f%.conf}SC.conf"
+      _run mv -f "$f" "$nf"
+      log "Renamed $(basename "$f") -> $(basename "$nf")"
+    fi
+  done
+  eval "$_ng"
+}
+
+cmd_rename_pf() {
+  local _ng
+  _ng=$(shopt -p nullglob)
+  shopt -s nullglob
+  for f in "${CONFIG_DIR}"/*.conf; do
+    if grep -q '^# Moderate NAT = off$' "$f" && \
+       grep -q '^# NAT-PMP (Port Forwarding) = on$' "$f" && \
+       [[ "$f" != *PF.conf ]]; then
+      local nf="${f%.conf}PF.conf"
       _run mv -f "$f" "$nf"
       log "Renamed $(basename "$f") -> $(basename "$nf")"
     fi
@@ -1395,7 +1595,6 @@ WEBUI_URL="$WEBUI_URL"
 WEBUI_USER="$WEBUI_USER"
 WEBUI_PASS="$WEBUI_PASS"
 QB_CONF_PATH="$QB_CONF_PATH"
-PF_GATEWAY_FALLBACK="$PF_GATEWAY_FALLBACK"
 PF_RENEW_SECS=$PF_RENEW_SECS
 PF_STATIC_FALLBACK_PORT=$PF_STATIC_FALLBACK_PORT
 LOG_JSON=${LOG_JSON}
@@ -1407,6 +1606,9 @@ DNS_HEALTH=${DNS_HEALTH}
 DNS_LAT_MS=$DNS_LAT_MS
 QBIT_HEALTH=${QBIT_HEALTH}
 EOF
+
+  chmod 600 "$CONF_FILE"
+  chown "${RUN_UID}:${RUN_GID}" "$CONF_FILE" 2>/dev/null || true
   log "Wrote $CONF_FILE"
   if [[ "${1:-}" == "--qb" || "${1:-}" == "--all" ]]; then
     qb_login || true
@@ -1420,9 +1622,11 @@ cmd_monitor() { monitor_loop; }
 usage() {
   cat <<EOF
 Usage: $0 [global] <command> [options]
-Global: -v|--verbose  --dry-run  --user USER  [env LOG_JSON=true]
+
+Global: -v|--verbose  --dry-run  --user=NAME --pf-proto=LIST --pf-require-both=false  [env LOG_JSON=true]
+
 Commands:
-  connect|c [--p2p|--secure-core|--any] [--cc CC]  Connect best server
+  connect|c [--p2p|--sc|--pf|--any] [--cc CC]  Connect best server
   reconnect|r                                      Reconnect
   disconnect|d                                     Down + restore routes/DNS
   status|s                                         Enhanced status panel
@@ -1433,7 +1637,8 @@ Commands:
   diag {wg|pf|dns|qb|all}                          Detailed diagnostics
   validate {conf FILE|configs}                     Config validation
   iface-scan                                       Pick LAN interface
-  rename-sc                                        Normalise SC filenames
+  rename-sc                                        Tag Secure Core filenames
+  rename-pf                                        Tag Port Forwarding filenames
   killswitch {enable|disable|iptables-enable|iptables-disable|status}
   reset                                            Hard reset
   init [--qb|--all]                                First-run config writer
@@ -1443,23 +1648,38 @@ EOF
 
 parse_globals() {
   local args=()
-  while [[ $# -gt 0 ]]; do case "$1" in -v | --verbose)
-    VERBOSE=1
-    shift
-    ;;
-  --dry-run)
-    DRY_RUN=1
-    shift
-    ;;
-  --)
-    shift
-    break
-    ;;
-  *)
-    args+=("$1")
-    shift
-    ;;
-  esac done
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -v|--verbose)
+        VERBOSE=1
+        shift
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        shift
+        ;;
+      --user=*)
+        CLI_USER="${1#*=}"
+        shift
+        ;;
+      --pf-proto=*)
+        IFS=',' read -r -a PF_PROTO_LIST <<<"${1#*=}"
+        shift
+        ;;
+      --pf-require-both=false)
+        PF_REQUIRE_BOTH=false
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
   printf '%s\n' "${args[@]}"
 }
 
@@ -1486,6 +1706,7 @@ main() {
     validate) cmd_validate "${rest[@]:-}" ;;
     iface-scan) cmd_iface_scan ;;
     rename-sc) cmd_rename_sc ;;
+    rename-pf) cmd_rename_pf ;;
     killswitch) cmd_killswitch "${rest[@]:-}" ;;
     reset) cmd_reset ;;
     init) cmd_init "${rest[@]:-}" ;;
@@ -1498,6 +1719,6 @@ main() {
   esac
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "$0" && -z "${PVPNWG_NO_MAIN:-}" ]]; then
   main "$@"
 fi

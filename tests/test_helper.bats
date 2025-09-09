@@ -5,7 +5,8 @@ export BATS_TEST_SKIPPED=""
 
 # Helper functions for test setup
 setup_test_env() {
-    export TEST_TMPDIR=$(mktemp -d)
+    TEST_TMPDIR=$(mktemp -d)
+    export TEST_TMPDIR
     export PHOME="$TEST_TMPDIR/.pvpnwg"
     export CONFIG_DIR="$PHOME/configs"
     export STATE_DIR="$PHOME/state"
@@ -20,7 +21,6 @@ setup_test_env() {
     export GW_STATE="$STATE_DIR/gw_state.txt"
     export IFCONF_FILE="$STATE_DIR/lan_if.txt"
     export COOKIE_JAR="$STATE_DIR/qb_cookie.txt"
-    export PF_GW_CACHE="$STATE_DIR/pf_gateway.txt"
     export MON_FAILS_FILE="$STATE_DIR/monitor_fail_count.txt"
     
     # Test mode settings
@@ -31,7 +31,6 @@ setup_test_env() {
     export WEBUI_URL="http://127.0.0.1:8080"
     export WEBUI_USER="test"
     export WEBUI_PASS="test"
-    export PF_GATEWAY_FALLBACK="10.2.0.1"
     export PF_STATIC_FALLBACK_PORT=51820
     export LOG_JSON=false
     
@@ -64,7 +63,16 @@ EOF
 # Create a Secure-Core config for testing
 create_test_sc_config() {
     local name="${1:-secure-core-test}"
-    create_test_config "${name}88" "${2:-sc.example.com}" "${3:-51820}"
+    create_test_config "${name}SC" "${2:-sc.example.com}" "${3:-51820}"
+}
+
+create_test_pf_config() {
+    local name="${1:-pf-test}"
+    create_test_config "$name" "${2:-pf.example.com}" "${3:-51820}"
+    cat >> "$CONFIG_DIR/${name}.conf" <<'EOF'
+# Moderate NAT = off
+# NAT-PMP (Port Forwarding) = on
+EOF
 }
 
 # Mock external commands for testing
@@ -259,7 +267,8 @@ require_root() {
 # Test data generators
 generate_pf_history() {
     local count="${1:-5}"
-    local base_ts=$(date +%s)
+    local base_ts
+    base_ts=$(date +%s)
     
     for ((i=0; i<count; i++)); do
         local ts=$((base_ts + i * 60))
@@ -284,17 +293,13 @@ validate_test_env() {
 
 # Source control for functions under test
 source_pvpnwg_functions() {
-    # Source only the functions we want to test, not the main execution
-    # This requires some careful sourcing to avoid running main()
-    
+    # Source pvpnwg.sh without executing main()
     local script_path="${PVPNWG_SCRIPT:-./pvpnwg.sh}"
     [[ -f "$script_path" ]] || {
         echo "pvpnwg.sh not found at: $script_path" >&2
         return 1
     }
-    
-    # Extract just the function definitions, skip main execution
-    sed -n '/^[a-zA-Z_][a-zA-Z0-9_]*\s*()/,/^}/p' "$script_path" | \
-    grep -v '^main(' | \
-    source /dev/stdin 2>/dev/null || true
+
+    # shellcheck source=pvpnwg.sh
+    PVPNWG_NO_MAIN=1 source "$script_path"
 }

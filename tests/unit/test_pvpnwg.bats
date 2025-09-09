@@ -6,28 +6,35 @@ load ../test_helper.bats
 
 # Test setup
 setup() {
-    export TEST_TMPDIR=$(mktemp -d)
+    TEST_TMPDIR=$(mktemp -d)
+    export TEST_TMPDIR
     export PHOME="$TEST_TMPDIR/.pvpnwg"
     export CONFIG_DIR="$PHOME/configs"
     export STATE_DIR="$PHOME/state"
     export TMP_DIR="$PHOME/tmp"
+    export TARGET_CONF="$PHOME/target.conf"
     export VERBOSE=0
     export DRY_RUN=1
+    export PVPNWG_USER="$(id -un)"
 
-    mkdir -p "$PHOME" "$CONFIG_DIR" "$STATE_DIR" "$TMP_DIR" "$TEST_TMPDIR/bin"
-    PATH="$TEST_TMPDIR/bin:$PATH"
-    cat >"$TEST_TMPDIR/bin/wg-quick" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-    chmod +x "$TEST_TMPDIR/bin/wg-quick"
-
+    mkdir -p "$PHOME" "$CONFIG_DIR" "$STATE_DIR" "$TMPDIR"
+    
     # Source the script functions (skip main execution)
     source ./pvpnwg.sh 2>/dev/null || true
 }
 
 teardown() {
     rm -rf "$TEST_TMPDIR"
+}
+
+# ===========================
+# User inference tests
+# ===========================
+
+@test "--user flag required when run as root without inferable user" {
+    run bash -c 'unset SUDO_USER PVPNWG_USER; bash pvpnwg.sh >/dev/null'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--user"* ]]
 }
 
 # ===========================
@@ -107,12 +114,12 @@ EOF
 # ===========================
 
 @test "is_secure_core_name detects SC configs" {
-    run is_secure_core_name "US-TX-88.conf"
+    run is_secure_core_name "US-TXSC.conf"
     [ "$status" -eq 0 ]
-    
-    run is_secure_core_name "CH-SC-1.conf"  
+
+    run is_secure_core_name "CH-SC-1.conf"
     [ "$status" -eq 0 ]
-    
+
     run is_secure_core_name "secure-core-nl.conf"
     [ "$status" -eq 0 ]
 }
@@ -123,6 +130,46 @@ EOF
     
     run is_secure_core_name "NL-FREE-1.conf"
     [ "$status" -eq 1 ]
+}
+
+# ===========================
+# Port Forwarding detection tests
+# ===========================
+
+@test "is_pf_name detects PF configs" {
+    run is_pf_name "US-TXPF.conf"
+    [ "$status" -eq 0 ]
+
+    run is_pf_name "port-forward-de.conf"
+    [ "$status" -eq 0 ]
+}
+
+@test "is_pf_name rejects non-PF configs" {
+    run is_pf_name "US-TX-1.conf"
+    [ "$status" -eq 1 ]
+}
+
+@test "cmd_rename_pf tags configs" {
+    create_test_pf_config "pfexample"
+    run cmd_rename_pf
+    [ "$status" -eq 0 ]
+    [ -f "$CONFIG_DIR/pfexamplePF.conf" ]
+}
+
+@test "select_conf handles P2P + PF configs" {
+    create_test_pf_config "mixP2P"
+    run cmd_rename_pf
+    [ -f "$CONFIG_DIR/mixP2PPF.conf" ]
+
+      # shellcheck disable=SC2317
+      function ping() {
+          printf '%s\n' "PING 1.2.3.4: 56 data bytes" "64 bytes from 1.2.3.4: time=50.0 ms"
+      }
+      export -f ping
+
+    run select_conf "pf"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"mixP2PPF.conf|50"* ]]
 }
 
 # ===========================
@@ -148,6 +195,93 @@ EOF
     run pf_parse_status "$output"
     [ "$status" -eq 0 ]
     [[ "$output" == "error" ]]
+}
+
+@test "conf_strip_ipv6_allowedips removes ::/0" {
+    cat > "$TARGET_CONF" <<EOF
+[Peer]
+AllowedIPs = 0.0.0.0/0, ::/0
+EOF
+    conf_strip_ipv6_allowedips
+    run grep -c '::/0' "$TARGET_CONF"
+    [ "$status" -eq 1 ]
+}
+
+@test "pf_derive_gateway_from_conf prefers DNS" {
+    cat > "$TARGET_CONF" <<EOF
+[Interface]
+Address = 10.2.3.4/32
+DNS = 10.2.3.1,8.8.8.8
+EOF
+    run pf_derive_gateway_from_conf
+    [ "$status" -eq 0 ]
+    [[ "$output" == "10.2.3.1" ]]
+}
+
+@test "pf_history_rotate_if_needed truncates file" {
+    PF_HISTORY="$TMP_DIR/pf_history.log"
+    PF_HISTORY_MAX=100
+    PF_HISTORY_KEEP=2
+    printf '%101s' "" | tr ' ' a >"$PF_HISTORY"
+    pf_history_rotate_if_needed
+    [ -f "$PF_HISTORY" ]
+    [ -f "$PF_HISTORY.1" ]
+}
+
+# ===========================
+# Interface scan tests
+# ===========================
+
+iface_mock() {
+    printf '1: lo: <LOOPBACK>\n2: eth0: <UP>\n3: wlan0: <UP>\n'
+}
+
+@test "iface_scan keeps existing interface with empty input" {
+    # shellcheck disable=SC2030,SC2031
+    export VERBOSE=1
+    LAN_IF="eth0"
+    export -f iface_mock
+    # shellcheck disable=SC2317
+    function ip() { iface_mock; }
+    export -f ip
+    output_file="$BATS_TMPDIR/iface_scan_keep.txt"
+    iface_scan >"$output_file" 2>&1 <<<""
+    [ "$LAN_IF" = "eth0" ]
+    [ ! -f "$IFCONF_FILE" ]
+    grep -q "Keep eth0" "$output_file"
+}
+
+@test "iface_scan saves new interface" {
+    # shellcheck disable=SC2030,SC2031
+    export VERBOSE=1
+    LAN_IF="eth0"
+    export -f iface_mock
+    # shellcheck disable=SC2317
+    function ip() { iface_mock; }
+    export -f ip
+    output_file="$BATS_TMPDIR/iface_scan_set.txt"
+    iface_scan >"$output_file" 2>&1 <<<"wlan0"
+    [ "$LAN_IF" = "wlan0" ]
+    [[ "$(cat "$IFCONF_FILE")" == "wlan0" ]]
+    # shellcheck disable=SC2314
+    ! grep -q "Keep" "$output_file"
+}
+
+@test "iface_scan reverts on save failure" {
+    # shellcheck disable=SC2030,SC2031
+    export VERBOSE=1
+    LAN_IF="eth0"
+    export -f iface_mock
+    # shellcheck disable=SC2317
+    function ip() { iface_mock; }
+    export -f ip
+    iface_save() { return 1; }
+    export -f iface_save
+    output_file="$BATS_TMPDIR/iface_scan_fail.txt"
+    iface_scan >"$output_file" 2>&1 <<<"wlan0"
+    [ "$LAN_IF" = "eth0" ]
+    [ ! -f "$IFCONF_FILE" ]
+    grep -q "Keep eth0" "$output_file"
 }
 
 # ===========================
@@ -206,6 +340,7 @@ EOF
 @test "parse_globals handles verbose flag" {
     tmp_out="$TMP_DIR/pg_out"
     parse_globals -v connect > "$tmp_out"
+    # shellcheck disable=SC2031
     [[ "$VERBOSE" -eq 1 ]]
     [[ "$(cat "$tmp_out")" == "connect" ]]
 }
@@ -224,22 +359,29 @@ EOF
 create_mock_natpmpc() {
     cat > "$TEST_TMPDIR/natpmpc" <<'EOF'
 #!/bin/bash
-# Mock natpmpc for testing
-
-case "$*" in
-    *"-g"*"10.2.0.1"*"51820"*"udp"*)
-        echo "Mapped public port 12345 to local port 51820 using UDP"
+case "$1" in
+    -v)
+        echo "natpmpc 20230423"
         exit 0
         ;;
-    *"-g"*"192.168.1.1"*"51820"*"udp"*)
-        echo "External IP not found, try again later"
-        exit 1
-        ;;
-    *)
-        echo "Connection failed: timeout"
-        exit 1
-        ;;
 esac
+while [[ "$1" ]]; do
+  case "$1" in
+    -g) gateway="$2"; shift 2 ;;
+    -a) int="$2"; ext="$3"; proto="$4"; shift 4 ;;
+    *) shift ;;
+  esac
+done
+if [[ "$gateway" == "10.2.0.1" ]]; then
+  echo "Mapped public port 12345 to local port ${int} using ${proto^^}"
+  exit 0
+elif [[ "$gateway" == "192.168.1.1" ]]; then
+  echo "External IP not found, try again later"
+  exit 1
+else
+  echo "Connection failed: timeout"
+  exit 1
+fi
 EOF
     chmod +x "$TEST_TMPDIR/natpmpc"
     export PATH="$TEST_TMPDIR:$PATH"
@@ -272,14 +414,10 @@ EOF
 
 @test "pf_request_once with successful mapping" {
     create_mock_natpmpc
-    export PF_GATEWAY_FALLBACK="10.2.0.1"
-    echo "51820" > "$STATE_DIR/mapped_port.txt"
-    
-    # Mock qb_get_port to return 51820
-    function qb_get_port() { echo "51820"; }
+
     function qb_set_port() { echo "qB set to $1"; }
-    export -f qb_get_port qb_set_port
-    
+    export -f qb_set_port
+
     run pf_request_once
     [ "$status" -eq 0 ]
     [[ "$(cat "$STATE_DIR/mapped_port.txt")" == "12345" ]]
@@ -320,8 +458,11 @@ AllowedIPs = 0.0.0.0/0
 EOF
     
     # Mock ping to return RTT
-    function ping() { echo "PING 1.2.3.4: 56 data bytes\n64 bytes from 1.2.3.4: time=50.0 ms"; }
-    export -f ping
+      # shellcheck disable=SC2317
+      function ping() { printf '%s\n' "PING 1.2.3.4: 56 data bytes" "64 bytes from 1.2.3.4: time=50.0 ms"; }
+      export -f ping
+      function getent() { return 1; }
+      export -f getent
     
     run select_conf "any"
     [ "$status" -eq 0 ]
