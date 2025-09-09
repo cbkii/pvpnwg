@@ -39,6 +39,39 @@ run_as() {
     userdel -r "$user"
 }
 
+@test "ignores inherited PHOME outside user home" {
+    user="pvuser1b"
+    userdel -r "$user" 2>/dev/null || true
+    useradd -m "$user"
+    run env -i PATH="$PATH" SUDO_USER="$user" HOME="/root" PHOME="/root/.pvpnwg" bash "$SCRIPT" init
+    [ "$status" -eq 0 ]
+    conf="/home/$user/.pvpnwg/pvpnwg.conf"
+    [ -f "$conf" ]
+    grep -Fq "PHOME=\"/home/$user/.pvpnwg\"" "$conf"
+    grep -Fq "CONFIG_DIR=\"/home/$user/.pvpnwg/configs\"" "$conf"
+    [ "$(stat -c '%U' "$conf")" = "$user" ]
+    [ ! -e "/root/.pvpnwg/pvpnwg.conf" ]
+    userdel -r "$user"
+}
+
+@test "config PHOME outside home is corrected" {
+    user="pvuser1c"
+    userdel -r "$user" 2>/dev/null || true
+    useradd -m "$user"
+    mkdir -p "/home/$user/.pvpnwg"
+    cat >"/home/$user/.pvpnwg/pvpnwg.conf" <<EOF
+PHOME="/root/.pvpnwg"
+CONFIG_DIR="/root/.pvpnwg/configs"
+EOF
+    chown -R "$user:$user" "/home/$user/.pvpnwg"
+    run env -i PATH="$PATH:/usr/sbin:/sbin" SUDO_USER="$user" HOME="/root" bash "$SCRIPT" init
+    [ "$status" -eq 0 ]
+    conf="/home/$user/.pvpnwg/pvpnwg.conf"
+    grep -Fq "PHOME=\"/home/$user/.pvpnwg\"" "$conf"
+    [ ! -e "/root/.pvpnwg/pvpnwg.conf" ]
+    userdel -r "$user"
+}
+
 @test "--user overrides SUDO_USER" {
     usera="pvuser2a"
     userb="pvuser2b"
@@ -67,6 +100,22 @@ run_as() {
     conf="/home/$user/.pvpnwg/pvpnwg.conf"
     [ -f "$conf" ]
     [ "$(stat -c '%U' "$conf")" = "$user" ]
+    userdel -r "$user"
+}
+
+@test "non-root run ignores SUDO_USER" {
+    if ! command -v sudo >/dev/null 2>&1 && ! command -v su >/dev/null 2>&1; then
+        skip "requires sudo or su"
+    fi
+    user="pvuser3b"
+    userdel -r "$user" 2>/dev/null || true
+    useradd -m "$user"
+    run run_as "$user" bash -c "SUDO_USER=root '$SCRIPT' init"
+    [ "$status" -eq 0 ]
+    conf="/home/$user/.pvpnwg/pvpnwg.conf"
+    [ -f "$conf" ]
+    [ "$(stat -c '%U' "$conf")" = "$user" ]
+    [ ! -e "/root/.pvpnwg/pvpnwg.conf" ]
     userdel -r "$user"
 }
 

@@ -48,7 +48,7 @@ if [[ -n "$CLI_USER" ]]; then
   RUN_USER="$CLI_USER"
 elif [[ -n "${PVPNWG_USER:-}" ]]; then
   RUN_USER="$PVPNWG_USER"
-elif [[ -n "${SUDO_USER:-}" ]]; then
+elif [[ $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
   RUN_USER="$SUDO_USER"
 else
   RUN_USER="$(id -un 2>/dev/null || echo root)"
@@ -90,6 +90,10 @@ LOG_MAX_BYTES_DEFAULT=$((1024 * 1024))
 # ===========================
 # Config / Env
 # ===========================
+# Only honor PHOME if it lives under the target user's home
+if [[ -n "${PHOME:-}" && "$PHOME" != "$RUN_HOME" && "$PHOME" != "$RUN_HOME"/* ]]; then
+  unset PHOME
+fi
 PHOME="${PHOME:-${PHOME_DEFAULT}}"
 CONF_FILE="${PHOME}/pvpnwg.conf"
 CONF_WARN_PERMS=""
@@ -99,7 +103,15 @@ if [[ -f "$CONF_FILE" ]]; then
   # shellcheck disable=SC1090
   . "$CONF_FILE"
 fi
+# Re-validate PHOME in case config file changed it
+if [[ "$PHOME" != "$RUN_HOME" && "$PHOME" != "$RUN_HOME"/* ]]; then
+  PHOME="${PHOME_DEFAULT}"
+fi
 CONFIG_DIR="${CONFIG_DIR:-${CONFIG_DIR_DEFAULT}}"
+if [[ "$CONFIG_DIR" != "$PHOME" && "$CONFIG_DIR" != "$PHOME"/* ]]; then
+  CONFIG_DIR="${CONFIG_DIR_DEFAULT}"
+fi
+export PHOME CONFIG_DIR
 IFACE="${IFACE:-${IFACE_DEFAULT}}"
 TARGET_CONF="${TARGET_CONF:-/etc/wireguard/${IFACE}.conf}"
 LAN_IF="${LAN_IF:-${LAN_IF_DEFAULT}}"
