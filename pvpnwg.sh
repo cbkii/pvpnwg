@@ -17,11 +17,47 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# Pre-parse --user to allow overriding invoking user
+RUN_USER=""
+orig_args=("$@")
+i=0
+while (( i < ${#orig_args[@]} )); do
+  arg="${orig_args[i]}"
+  case "$arg" in
+    --user)
+      RUN_USER="${orig_args[i+1]:-}"
+      orig_args=("${orig_args[@]:0:i}" "${orig_args[@]:i+2}")
+      break
+      ;;
+    --user=*)
+      RUN_USER="${arg#--user=}"
+      orig_args=("${orig_args[@]:0:i}" "${orig_args[@]:i+1}")
+      break
+      ;;
+    *)
+      ((i+=1))
+      ;;
+  esac
+done
+set -- "${orig_args[@]}"
+
 # ===========================
-# Defaults
+# Defaults (derive from invoking user)
 # ===========================
-PHOME_DEFAULT="/home/pipi/.pvpnwg"
-CONFIG_DIR_DEFAULT="/home/pipi/.pvpnwg/configs"
+if [[ -z "$RUN_USER" ]]; then
+  if [[ ${EUID} -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    RUN_USER="$SUDO_USER"
+  else
+    RUN_USER="$(id -un 2>/dev/null || echo root)"
+  fi
+fi
+RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+RUN_HOME="${RUN_HOME:-$HOME}"
+RUN_UID="$(id -u "$RUN_USER" 2>/dev/null || echo 0)"
+RUN_GID="$(id -g "$RUN_USER" 2>/dev/null || echo 0)"
+
+PHOME_DEFAULT="${RUN_HOME}/.pvpnwg"
+CONFIG_DIR_DEFAULT="${PHOME_DEFAULT}/configs"
 IFACE_DEFAULT="pvpnwg0"
 LAN_IF_DEFAULT="eth0"
 TIME_LIMIT_SECS_DEFAULT=$((8 * 3600))
@@ -29,7 +65,7 @@ DL_THRESHOLD_KBPS_DEFAULT=33
 WEBUI_URL_DEFAULT="http://192.168.1.50:8080"
 WEBUI_USER_DEFAULT="admin"
 WEBUI_PASS_DEFAULT="change_me"
-QB_CONF_PATH_DEFAULT="/home/pipi/.config/qBittorrent/qBittorrent.conf"
+QB_CONF_PATH_DEFAULT="${RUN_HOME}/.config/qBittorrent/qBittorrent.conf"
 PF_GATEWAY_FALLBACK_DEFAULT="10.2.0.1"
 PF_RENEW_SECS_DEFAULT=45
 PF_STATIC_FALLBACK_PORT_DEFAULT=51820
@@ -48,7 +84,7 @@ LOG_MAX_BYTES_DEFAULT=$((1024 * 1024))
 # ===========================
 # Config / Env
 # ===========================
-PHOME="${PVPN_PHOME:-${PHOME_DEFAULT}}"
+PHOME="${PHOME:-${PHOME_DEFAULT}}"
 CONF_FILE="${PHOME}/pvpnwg.conf"
 CONF_WARN_PERMS=""
 if [[ -f "$CONF_FILE" ]]; then
@@ -104,7 +140,13 @@ PF_HISTORY="${STATE_DIR}/pf_history.tsv" # ts\tprivate\tpublic\tgw\tstatus
 PF_JITTER_FILE="${STATE_DIR}/pf_jitter_count.txt"
 HANDSHAKE_FILE="${STATE_DIR}/last_handshake.txt"
 
-mkdir -p "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
+if [[ ${EUID} -eq 0 ]]; then
+  install -d -m 700 -o "${RUN_UID}" -g "${RUN_GID}" "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
+  [[ -f "${LOG_FILE}" ]] || install -m 600 -o "${RUN_UID}" -g "${RUN_GID}" /dev/null "${LOG_FILE}"
+else
+  install -d -m 700 "${PHOME}" "${STATE_DIR}" "${TMP_DIR}" "${CONFIG_DIR}"
+  [[ -f "${LOG_FILE}" ]] || install -m 600 /dev/null "${LOG_FILE}"
+fi
 
 # ===========================
 # Logging helpers
@@ -155,7 +197,6 @@ check_deps() {
   if command -v natpmpc >/dev/null 2>&1; then
     if ! natpmpc -v 2>&1 | grep -Eq '([0-9]{4}-[0-9]{2}-[0-9]{2})'; then log "WARN: natpmpc version unknown/old; PF may be flaky (non-blocking)"; fi
   fi
-  sudo -n true 2>/dev/null || die "Passwordless sudo required (NOPASSWD)."
 }
 
 # Warn if config permissions are too permissive
@@ -535,17 +576,20 @@ wg_unhealthy_reason() {
 # ===========================
 # qBittorrent helpers
 # ===========================
-  qb_login() {
-    : >"$COOKIE_JAR"
-    chmod 600 "$COOKIE_JAR"
-    if ! printf 'username=%s&password=%s' "$WEBUI_USER" "$WEBUI_PASS" |
-      curl -sS --fail --connect-timeout 10 -c "$COOKIE_JAR" \
-        --data-binary @- "${WEBUI_URL%/}/api/v2/auth/login" >/dev/null; then
-      log "WARN: qBittorrent WebUI login failed"
-      return 1
-    fi
-  }
-  qb_set_port_webui() {
+qb_login() {
+  if [[ ${EUID} -eq 0 ]]; then
+    install -m 600 -o "${RUN_UID}" -g "${RUN_GID}" /dev/null "$COOKIE_JAR"
+  else
+    install -m 600 /dev/null "$COOKIE_JAR"
+  fi
+  if ! printf 'username=%s&password=%s' "$WEBUI_USER" "$WEBUI_PASS" |
+    curl -sS --fail --connect-timeout 10 -c "$COOKIE_JAR" \
+      --data-binary @- "${WEBUI_URL%/}/api/v2/auth/login" >/dev/null; then
+    log "WARN: qBittorrent WebUI login failed"
+    return 1
+  fi
+}
+qb_set_port_webui() {
     local port="$1"
     qb_login || return 1
     local url="${WEBUI_URL%/}"
@@ -590,6 +634,7 @@ qb_set_port() {
         fi
       done <"$QB_CONF_PATH" >"$tmp"; then
         mv "$tmp" "$QB_CONF_PATH"
+        chown "${RUN_UID}:${RUN_GID}" "$QB_CONF_PATH" 2>/dev/null || true
         log "qB conf patched listen_port=${port} (restart qB)"
         return 0
       else
@@ -1333,8 +1378,13 @@ cmd_validate() {
 }
 
 cmd_init() {
-  mkdir -p "$PHOME" "$CONFIG_DIR"
-  chmod 700 "$PHOME"
+  if [[ ${EUID} -eq 0 ]]; then
+    install -d -m 700 -o "${RUN_UID}" -g "${RUN_GID}" "$PHOME" "$CONFIG_DIR"
+    install -m 600 -o "${RUN_UID}" -g "${RUN_GID}" /dev/null "$CONF_FILE"
+  else
+    install -d -m 700 "$PHOME" "$CONFIG_DIR"
+    install -m 600 /dev/null "$CONF_FILE"
+  fi
   cat >"$CONF_FILE" <<EOF
 # pvpnwg.conf — sourced by pvpnwg.sh
 PHOME="$PHOME"
@@ -1359,7 +1409,6 @@ DNS_HEALTH=${DNS_HEALTH}
 DNS_LAT_MS=$DNS_LAT_MS
 QBIT_HEALTH=${QBIT_HEALTH}
 EOF
-  chmod 600 "$CONF_FILE"
   log "Wrote $CONF_FILE"
   if [[ "${1:-}" == "--qb" || "${1:-}" == "--all" ]]; then
     qb_login || true
@@ -1373,7 +1422,7 @@ cmd_monitor() { monitor_loop; }
 usage() {
   cat <<EOF
 Usage: $0 [global] <command> [options]
-Global: -v|--verbose  --dry-run  [env LOG_JSON=true]
+Global: -v|--verbose  --dry-run  --user USER  [env LOG_JSON=true]
 Commands:
   connect|c [--p2p|--secure-core|--any] [--cc CC]  Connect best server
   reconnect|r                                      Reconnect
@@ -1417,13 +1466,15 @@ parse_globals() {
 }
 
 main() {
-  need_root
-  check_deps
-  iface_load
-  detect_dns_backend
   mapfile -t rest < <(parse_globals "$@")
   local cmd="${rest[0]:-}"
   rest=("${rest[@]:1}")
+  if [[ "$cmd" != "init" ]]; then
+    need_root
+    check_deps
+    iface_load
+    detect_dns_backend
+  fi
   case "$cmd" in
     connect | c) cmd_connect "${rest[@]:-}" ;;
     reconnect | r) cmd_reconnect "${rest[@]:-}" ;;

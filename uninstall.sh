@@ -109,13 +109,9 @@ cleanup_vpn_state() {
 handle_user_data() {
     local user="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
     local home_dir
-    
-    if [[ "$user" == "root" ]]; then
-        home_dir="/root"
-    else
-        home_dir="/home/$user"
-    fi
-    
+    home_dir="$(getent passwd "$user" | cut -d: -f6)"
+    home_dir="${home_dir:-/root}"
+
     local phome="${home_dir}/.pvpnwg"
     
     if [[ -d "$phome" ]]; then
@@ -145,13 +141,9 @@ handle_user_data() {
 restore_dns_if_needed() {
     local user="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
     local home_dir
-    
-    if [[ "$user" == "root" ]]; then
-        home_dir="/root"
-    else
-        home_dir="/home/$user"
-    fi
-    
+    home_dir="$(getent passwd "$user" | cut -d: -f6)"
+    home_dir="${home_dir:-/root}"
+
     local dns_backup="${home_dir}/.pvpnwg/state/dns_backup.tar"
     
     if [[ -f "$dns_backup" ]]; then

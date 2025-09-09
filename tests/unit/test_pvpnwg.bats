@@ -13,9 +13,15 @@ setup() {
     export TMP_DIR="$PHOME/tmp"
     export VERBOSE=0
     export DRY_RUN=1
-    
-    mkdir -p "$PHOME" "$CONFIG_DIR" "$STATE_DIR" "$TMP_DIR"
-    
+
+    mkdir -p "$PHOME" "$CONFIG_DIR" "$STATE_DIR" "$TMP_DIR" "$TEST_TMPDIR/bin"
+    PATH="$TEST_TMPDIR/bin:$PATH"
+    cat >"$TEST_TMPDIR/bin/wg-quick" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/bin/wg-quick"
+
     # Source the script functions (skip main execution)
     source ./pvpnwg.sh 2>/dev/null || true
 }

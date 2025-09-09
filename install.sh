@@ -184,33 +184,19 @@ EOF
 setup_user_config() {
     local user="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
     local home_dir
-    
-    if [[ "$user" == "root" ]]; then
-        home_dir="/root"
-    else
-        home_dir="/home/$user"
-    fi
-    
+    home_dir="$(getent passwd "$user" | cut -d: -f6)"
     local phome="${home_dir}/.pvpnwg"
-    
+
     log "Setting up user configuration for: $user"
     log "PHOME will be: $phome"
-    
-    if [[ ! -d "$phome" ]]; then
-        sudo -u "$user" mkdir -p "$phome/configs" "$phome/state" "$phome/tmp"
-        sudo -u "$user" chmod 700 "$phome"
-        log "✓ Created $phome"
-    else
-        log "✓ $phome already exists"
-    fi
-    
+
     if [[ ! -f "$phome/pvpnwg.conf" ]]; then
         log "Running init to create default config..."
-        PVPN_PHOME="$phome" "${INSTALL_DIR}/${BIN_NAME}" init
+        sudo -u "$user" "${INSTALL_DIR}/${BIN_NAME}" init
     else
         log "✓ Config already exists at $phome/pvpnwg.conf"
     fi
-    
+
     echo
     echo "Next steps:"
     echo "1. Copy your Proton WireGuard .conf files to: $phome/configs/"
