@@ -2,6 +2,27 @@
 # uninstall.sh — Remove enhanced ProtonVPN WireGuard CLI
 set -euo pipefail
 
+# Pre-parse for --user override
+CLI_USER=""
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --user=*) CLI_USER="${arg#*=}" ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+set -- "${ARGS[@]}"
+
+RUN_USER=""
+if [[ -n "$CLI_USER" ]]; then
+    RUN_USER="$CLI_USER"
+elif [[ -n "${SUDO_USER:-}" ]]; then
+    RUN_USER="$SUDO_USER"
+else
+    RUN_USER="$(id -un)"
+fi
+RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+
 INSTALL_DIR="/usr/local/bin"
 SYSTEMD_DIR="/etc/systemd/system"
 BIN_NAME="pvpnwg"
@@ -107,16 +128,8 @@ cleanup_vpn_state() {
 }
 
 handle_user_data() {
-    local user="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
-    local home_dir
-    
-    if [[ "$user" == "root" ]]; then
-        home_dir="/root"
-    else
-        home_dir=$(getent passwd "$user" | cut -d: -f6)
-        [[ -n "$home_dir" ]] || home_dir="/home/$user"
-    fi
-    
+    local user="$RUN_USER"
+    local home_dir="$RUN_HOME"
     local phome="${home_dir}/.pvpnwg"
     
     if [[ -d "$phome" ]]; then
@@ -144,15 +157,8 @@ handle_user_data() {
 }
 
 restore_dns_if_needed() {
-    local user="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
-    local home_dir
-    
-    if [[ "$user" == "root" ]]; then
-        home_dir="/root"
-    else
-        home_dir="/home/$user"
-    fi
-    
+    local user="$RUN_USER"
+    local home_dir="$RUN_HOME"
     local dns_backup="${home_dir}/.pvpnwg/state/dns_backup.tar"
     
     if [[ -f "$dns_backup" ]]; then

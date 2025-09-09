@@ -625,7 +625,7 @@ sudo pvpnwg diag all
 ### Environment Overrides
 ```bash
 # Custom home directory
-PVPN_PHOME="/custom/path" sudo pvpnwg status
+PHOME="/custom/path" sudo pvpnwg status
 
 # JSON logging
 LOG_JSON=true sudo pvpnwg connect
@@ -639,7 +639,7 @@ VERBOSE=1 sudo pvpnwg pf start
 # Development environment
 cp ~/.pvpnwg/pvpnwg.conf ~/.pvpnwg/pvpnwg-dev.conf
 # Edit dev config, then:
-PVPN_PHOME="/home/user/.pvpnwg-dev" sudo pvpnwg init
+PHOME="/home/user/.pvpnwg-dev" sudo pvpnwg init
 ```
 
 ### Custom Systemd Units
@@ -654,7 +654,7 @@ sudo systemctl edit pvpn-check.timer
 sudo systemctl edit pvpn-pf.service
 # Add:
 # [Service]
-# Environment="PVPN_PHOME=/custom/path"
+# Environment="PHOME=/custom/path"
 ```
 
 ## Security Considerations
