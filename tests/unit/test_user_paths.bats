@@ -3,6 +3,10 @@
 
 SCRIPT="$BATS_TEST_DIRNAME/../../pvpnwg.sh"
 
+setup() {
+    export PATH="$BATS_TEST_DIRNAME/../mock/bin:$PATH"
+}
+
 run_as() {
     local user="$1"
     shift

@@ -5,10 +5,20 @@ set -euo pipefail
 # Pre-parse for --user override
 CLI_USER=""
 ARGS=()
-for arg in "$@"; do
-    case "$arg" in
-        --user=*) CLI_USER="${arg#*=}" ;;
-        *) ARGS+=("$arg") ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --user=*)
+            CLI_USER="${1#*=}"
+            shift
+            ;;
+        --user)
+            CLI_USER="$2"
+            shift 2
+            ;;
+        *)
+            ARGS+=("$1")
+            shift
+            ;;
     esac
 done
 set -- "${ARGS[@]}"
@@ -20,6 +30,10 @@ elif [[ -n "${SUDO_USER:-}" ]]; then
     RUN_USER="$SUDO_USER"
 else
     RUN_USER="$(id -un)"
+fi
+if ! getent passwd "$RUN_USER" >/dev/null 2>&1; then
+    echo "Unknown user: $RUN_USER" >&2
+    exit 1
 fi
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 

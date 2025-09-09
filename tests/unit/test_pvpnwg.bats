@@ -17,7 +17,7 @@ setup() {
     export DRY_RUN=1
     export PVPNWG_USER="$(id -un)"
 
-    mkdir -p "$PHOME" "$CONFIG_DIR" "$STATE_DIR" "$TMPDIR"
+    mkdir -p "$PHOME" "$CONFIG_DIR" "$STATE_DIR" "$TMP_DIR"
     
     # Source the script functions (skip main execution)
     source ./pvpnwg.sh 2>/dev/null || true

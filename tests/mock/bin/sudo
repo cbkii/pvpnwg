@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# mock sudo for test environment: runs commands without password prompts
+set -euo pipefail
+
+# ignore non-interactive flag
+if [[ "${1:-}" == "-n" ]]; then
+    shift
+fi
+
+target=""
+if [[ "${1:-}" == "-u" ]]; then
+    target="$2"
+    shift 2
+fi
+
+if [[ -n "$target" ]]; then
+    if [[ "$target" == \#* ]]; then
+        uid="${target#\#}"
+        target="$(getent passwd "$uid" | cut -d: -f1)"
+    fi
+    if [[ "$(id -un)" == "$target" ]]; then
+        exec "$@"
+    else
+        exec su "$target" -c "$(printf '%q ' "$@")"
+    fi
+else
+    exec "$@"
+fi
+
