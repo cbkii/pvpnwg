@@ -127,7 +127,7 @@ EOF
     [[ "$output" == *"Unknown user"* ]]
 }
 
-@test "falls back to su when sudo missing" {
+@test "fails without sudo" {
     user="pvuser4"
     userdel -r "$user" 2>/dev/null || true
     useradd -m "$user"
@@ -138,10 +138,7 @@ EOF
     done
 
     run env -i PATH="$nosudo" SUDO_USER="$user" HOME="/root" bash "$SCRIPT" init
-    [ "$status" -eq 0 ]
-    conf="/home/$user/.pvpnwg/pvpnwg.conf"
-    [ -f "$conf" ]
-    [ "$(stat -c '%U' "$conf")" = "$user" ]
+    [ "$status" -ne 0 ]
 
     userdel -r "$user"
     rm -rf "$nosudo"
