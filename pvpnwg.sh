@@ -75,12 +75,22 @@ _run() {
   "$@"
 }
 ensure_sudo() {
-  if ! sudo -n true 2>/dev/null; then
+  if [[ $EUID -eq 0 ]]; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      vlog "sudo available for root:$EUID"
+    else
+      vlog "sudo unavailable; running privileged commands directly as root"
+      sudo() { "$@"; }
+    fi
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    vlog "sudo available for $(id -un):$EUID"
+  else
     log "ERROR: Passwordless sudo required for network operations (caller $(id -un):$EUID)"
     log "Configure with: echo '$USER ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/$USER"
     exit 1
   fi
-  vlog "sudo available for $(id -un):$EUID"
 }
 
 # Initialize logging ASAP
