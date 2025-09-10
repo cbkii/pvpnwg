@@ -17,7 +17,12 @@ set -euo pipefail
 IFS=$'\n\t'
 VERBOSE=0
 DRY_RUN=0
-LOG_FILE="/tmp/pvpnwg.log"
+# Create secure temporary log before user context is known
+ORIG_UMASK=$(umask)
+umask 077
+LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/pvpnwg.XXXXXX.log")"
+umask "$ORIG_UMASK"
+chmod 600 "$LOG_FILE"
 LOG_JSON=false
 LOG_MAX_BYTES=$((1024 * 1024))
 
@@ -302,8 +307,9 @@ prepare_paths() {
   HANDSHAKE_FILE="${STATE_DIR}/last_handshake.txt"
   run_as_user touch "$new_log" "$TIME_FILE" "$PORT_FILE" "$COOKIE_JAR" \
     "$MON_FAILS_FILE" "$PF_HISTORY" "$PF_JITTER_FILE" "$HANDSHAKE_FILE"
+  run_as_user chmod 600 "$new_log"
   if [[ -f "$prev_log" && "$prev_log" != "$new_log" ]]; then
-    run_as_user sh -c "cat '$prev_log' >> '$new_log'"
+    cat "$prev_log" | run_as_user tee -a "$new_log" >/dev/null
     command -v rm >/dev/null 2>&1 && rm -f "$prev_log"
   fi
   LOG_FILE="$new_log"
