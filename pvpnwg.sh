@@ -758,7 +758,14 @@ wg_conf_dns() {
 }
 
 conf_strip_ipv6_allowedips() {
-  _runsudo sed -i -E 's/::\/0(, *| *|$)//g; s/(, *)$//; s/^AllowedIPs\s*=\s*$//;' "$TARGET_CONF"
+  _runsudo sed -i -E \
+    -e 's/::\/0//g' \
+    -e 's/([ ,]+)$//' \
+    -e 's/^(AllowedIPs\s*=\s*),/\1/' \
+    -e 's/^(AllowedIPs\s*=\s*),*/\1/' \
+    -e 's/(, *)+/,/g' \
+    -e '/^AllowedIPs\s*=\s*$/d' \
+    "$TARGET_CONF"
 }
 
 wg_link_state() {
