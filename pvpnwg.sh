@@ -74,22 +74,38 @@ _run() {
   fi
   "$@"
 }
+
 ensure_sudo() {
+  if [[ -n "${SUDO_READY:-}" ]]; then
+    return
+  fi
+  SUDO_READY=1
   if [[ $EUID -eq 0 ]]; then
     if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      SUDO_CMD="sudo"
       vlog "sudo available for root:$EUID"
     else
+      SUDO_CMD=""
       vlog "sudo unavailable; running privileged commands directly as root"
-      sudo() { "$@"; }
     fi
     return 0
   fi
   if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    SUDO_CMD="sudo"
     vlog "sudo available for $(id -un):$EUID"
   else
     log "ERROR: Passwordless sudo required for network operations (caller $(id -un):$EUID)"
     log "Configure with: echo '$USER ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/$USER"
     exit 1
+  fi
+}
+
+_runsudo() {
+  ensure_sudo
+  if [[ -n "${SUDO_CMD:-}" ]]; then
+    _run "$SUDO_CMD" "$@"
+  else
+    _run "$@"
   fi
 }
 
@@ -340,8 +356,7 @@ restore_gw_state() {
   if [[ -s "$GW_STATE" ]]; then
     read -r gw dev <"$GW_STATE"
     if [[ -n "${gw:-}" && -n "${dev:-}" ]]; then
-      ensure_sudo
-      _run sudo ip route replace default via "$gw" dev "$dev"
+      _runsudo ip route replace default via "$gw" dev "$dev"
       log "Restored default route: $gw $dev"
     fi
   fi
@@ -349,8 +364,7 @@ restore_gw_state() {
 
 # DNS backup/restore/dedupe
 _dns_tar() {
-  ensure_sudo
-  _run sudo tar -cpf "$DNS_BACKUP" "$@" 2>/dev/null || true
+  _runsudo tar -cpf "$DNS_BACKUP" "$@" 2>/dev/null || true
 }
 dns_backup() {
   detect_dns_backend
@@ -358,18 +372,17 @@ dns_backup() {
 }
 dns_restore_generic() {
   detect_dns_backend
-  ensure_sudo
   case "$dns_backend" in
     systemd-resolved)
-      _run sudo resolvectl revert "$IFACE" || true
+      _runsudo resolvectl revert "$IFACE" || true
       ;;
     resolvconf)
-      _run sudo resolvconf -u || true
+      _runsudo resolvconf -u || true
       ;;
     *)
       : >"$TMP_DIR/resolv.conf.generic"
       printf '%s\n' "nameserver 1.1.1.1" "nameserver 8.8.8.8" >>"$TMP_DIR/resolv.conf.generic"
-      _run sudo cp -f "$TMP_DIR/resolv.conf.generic" /etc/resolv.conf || true
+      _runsudo cp -f "$TMP_DIR/resolv.conf.generic" /etc/resolv.conf || true
       ;;
   esac
   log "DNS restored generically"
@@ -384,8 +397,7 @@ dns_restore() {
     local tmp
     tmp=$(mktemp -d)
     if _run tar -xpf "$DNS_BACKUP" -C "$tmp"; then
-      ensure_sudo
-      _run sudo cp -a "$tmp/." /
+      _runsudo cp -a "$tmp/." /
       log "DNS restored from backup"
     else
       log "DNS backup extraction failed; using generic restore"
@@ -399,8 +411,7 @@ dns_restore() {
 dns_dedupe() {
   if [[ -f /etc/resolv.conf ]]; then
     awk '!seen[$0]++' /etc/resolv.conf >"$TMP_DIR/resolv.conf.dedup"
-    ensure_sudo
-    _run sudo cp -f "$TMP_DIR/resolv.conf.dedup" /etc/resolv.conf
+    _runsudo cp -f "$TMP_DIR/resolv.conf.dedup" /etc/resolv.conf
     log "Deduped resolv.conf"
   fi
 }
@@ -441,7 +452,6 @@ cmd_dns() {
       case "${2:-}" in
         proton)
           detect_dns_backend
-          ensure_sudo
           local dns_servers
           dns_servers=$(wg_conf_dns | tr ',' ' ' | xargs -n1 | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | xargs)
           if [[ -z "$dns_servers" ]]; then
@@ -449,8 +459,8 @@ cmd_dns() {
             return 1
           fi
           if [[ "$dns_backend" == "systemd-resolved" ]]; then
-            for d in $dns_servers; do _run sudo resolvectl dns "$IFACE" "$d" || true; done
-            _run sudo resolvectl domain "$IFACE" "~." || true
+            for d in $dns_servers; do _runsudo resolvectl dns "$IFACE" "$d" || true; done
+            _runsudo resolvectl domain "$IFACE" "~." || true
             log "DNS(v4): set on $IFACE via systemd-resolved"
           else
             if [[ -L /etc/resolv.conf ]]; then
@@ -458,8 +468,7 @@ cmd_dns() {
             else
               : >"$TMP_DIR/resolv.conf.new"
               for d in $dns_servers; do printf 'nameserver %s\n' "$d" >>"$TMP_DIR/resolv.conf.new"; done
-              ensure_sudo
-              _run sudo cp -f "$TMP_DIR/resolv.conf.new" /etc/resolv.conf
+              _runsudo cp -f "$TMP_DIR/resolv.conf.new" /etc/resolv.conf
               log "DNS set to Proton (${dns_servers})"
             fi
           fi
@@ -706,25 +715,22 @@ select_conf() {
 # ===========================
 wg_up() {
   local conf="$1"
-  ensure_sudo
-  _run sudo mkdir -p /etc/wireguard
-  _run sudo cp -f "$conf" "$TARGET_CONF"
+  _runsudo mkdir -p /etc/wireguard
+  _runsudo cp -f "$conf" "$TARGET_CONF"
   conf_strip_ipv6_allowedips
-  _run sudo wg-quick down "$IFACE" >/dev/null 2>&1 || true
-  _run sudo wg-quick up "$IFACE"
+  _runsudo wg-quick down "$IFACE" >/dev/null 2>&1 || true
+  _runsudo wg-quick up "$IFACE"
   date +%s >"$TIME_FILE"
   log "WG up via $(basename "$conf")"
 }
 wg_down() {
-  ensure_sudo
-  _run sudo wg-quick down "$IFACE" >/dev/null 2>&1 || true
+  _runsudo wg-quick down "$IFACE" >/dev/null 2>&1 || true
   log "WG $IFACE down"
 }
 
 wg_handshake_age() {
-  ensure_sudo
   local handshake_line
-  handshake_line=$(_run sudo wg show "$IFACE" latest-handshakes 2>/dev/null | head -1 || true)
+  handshake_line=$(_runsudo wg show "$IFACE" latest-handshakes 2>/dev/null | head -1 || true)
   if [[ -z "$handshake_line" ]]; then
     echo "never"
     return 1
@@ -744,8 +750,7 @@ wg_handshake_age() {
 }
 
 wg_endpoint_host() {
-  ensure_sudo
-  _run sudo wg show "$IFACE" endpoints 2>/dev/null | awk '{print $2}' | awk -F':' '{print $1; exit}'
+  _runsudo wg show "$IFACE" endpoints 2>/dev/null | awk '{print $2}' | awk -F':' '{print $1; exit}'
 }
 
 wg_conf_dns() {
@@ -753,8 +758,7 @@ wg_conf_dns() {
 }
 
 conf_strip_ipv6_allowedips() {
-  ensure_sudo
-  _run sudo sed -i -E 's/::\/0(, *| *|$)//g; s/(, *)$//; s/^AllowedIPs\s*=\s*$//;' "$TARGET_CONF"
+  _runsudo sed -i -E 's/::\/0(, *| *|$)//g; s/(, *)$//; s/^AllowedIPs\s*=\s*$//;' "$TARGET_CONF"
 }
 
 wg_link_state() {
@@ -1248,8 +1252,7 @@ monitor_once() {
 
   # Endpoint latency (existing logic)
   local host
-  ensure_sudo
-  host=$(_run sudo wg show "$IFACE" endpoints 2>/dev/null | awk '{print $2}' | awk -F':' '{print $1; exit}')
+  host=$(_runsudo wg show "$IFACE" endpoints 2>/dev/null | awk '{print $2}' | awk -F':' '{print $1; exit}')
   if [[ -n "$host" ]]; then
     local rtt
     rtt=$(ping_rtt_ms "$host")
@@ -1285,11 +1288,10 @@ monitor_loop() {
 # Killswitch templates
 # ===========================
 wg_endpoint_rule_add_v4() {
-  ensure_sudo
   local host port ip4
-  if ip link show "$IFACE" >/dev/null 2>&1 && _run sudo wg show "$IFACE" endpoints | grep -q ':'; then
-    host=$(_run sudo wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $1; exit}')
-    port=$(_run sudo wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $2; exit}')
+  if ip link show "$IFACE" >/dev/null 2>&1 && _runsudo wg show "$IFACE" endpoints | grep -q ':'; then
+    host=$(_runsudo wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $1; exit}')
+    port=$(_runsudo wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $2; exit}')
   else
     host=$(awk -F= '/^\s*Endpoint\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | awk -F: '{print $1}')
     port=$(awk -F= '/^\s*Endpoint\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | awk -F: '{print $2}')
@@ -1297,7 +1299,7 @@ wg_endpoint_rule_add_v4() {
   [[ -n $host && -n $port ]] || return 0
   ip4=$(getent ahostsv4 "$host" | awk '/STREAM/ {print $1; exit}')
   [[ -n $ip4 ]] || return 0
-  _run sudo nft add rule inet pvpnwg output oifname "$LAN_IF" ip daddr "$ip4" udp dport "$port" accept || true
+  _runsudo nft add rule inet pvpnwg output oifname "$LAN_IF" ip daddr "$ip4" udp dport "$port" accept || true
 }
 
 # nftables
@@ -1306,8 +1308,7 @@ killswitch_enable() {
     log "nft not installed"
     return 1
   fi
-  ensure_sudo
-  _run sudo nft -f - <<NFT
+  _runsudo nft -f - <<NFT
 table inet pvpnwg {
   chain output {
     type filter hook output priority 0; policy drop;
@@ -1330,8 +1331,7 @@ killswitch_disable() {
     log "nft not installed"
     return 1
   }
-  ensure_sudo
-  _run sudo nft delete table inet pvpnwg || true
+  _runsudo nft delete table inet pvpnwg || true
   log "Killswitch (nft) disabled"
 }
 
@@ -1341,29 +1341,28 @@ killswitch_iptables_enable() {
     log "iptables not installed"
     return 1
   fi
-  ensure_sudo
-  _run sudo iptables -N pvpnwg-out >/dev/null 2>&1 || true
-  _run sudo iptables -F pvpnwg-out
-  _run sudo iptables -I OUTPUT 1 -j pvpnwg-out
-  _run sudo iptables -A pvpnwg-out -m state --state ESTABLISHED,RELATED -j ACCEPT
-  _run sudo iptables -A pvpnwg-out -o "$IFACE" -j ACCEPT
-  _run sudo iptables -A pvpnwg-out -d 127.0.0.0/8 -j ACCEPT
-  _run sudo iptables -A pvpnwg-out -d 10.0.0.0/8 -j ACCEPT
-  _run sudo iptables -A pvpnwg-out -d 172.16.0.0/12 -j ACCEPT
-  _run sudo iptables -A pvpnwg-out -d 192.168.0.0/16 -j ACCEPT
+  _runsudo iptables -N pvpnwg-out >/dev/null 2>&1 || true
+  _runsudo iptables -F pvpnwg-out
+  _runsudo iptables -I OUTPUT 1 -j pvpnwg-out
+  _runsudo iptables -A pvpnwg-out -m state --state ESTABLISHED,RELATED -j ACCEPT
+  _runsudo iptables -A pvpnwg-out -o "$IFACE" -j ACCEPT
+  _runsudo iptables -A pvpnwg-out -d 127.0.0.0/8 -j ACCEPT
+  _runsudo iptables -A pvpnwg-out -d 10.0.0.0/8 -j ACCEPT
+  _runsudo iptables -A pvpnwg-out -d 172.16.0.0/12 -j ACCEPT
+  _runsudo iptables -A pvpnwg-out -d 192.168.0.0/16 -j ACCEPT
   local host port ip4
-  if ip link show "$IFACE" >/dev/null 2>&1 && _run sudo wg show "$IFACE" endpoints | grep -q ':'; then
-    host=$(_run sudo wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $1; exit}')
-    port=$(_run sudo wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $2; exit}')
+  if ip link show "$IFACE" >/dev/null 2>&1 && _runsudo wg show "$IFACE" endpoints | grep -q ':'; then
+    host=$(_runsudo wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $1; exit}')
+    port=$(_runsudo wg show "$IFACE" endpoints | awk '{print $2}' | awk -F: '{print $2; exit}')
   else
     host=$(awk -F= '/^\s*Endpoint\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | awk -F: '{print $1}')
     port=$(awk -F= '/^\s*Endpoint\s*=/{gsub(/[ \t]/,"",$2);print $2}' "$TARGET_CONF" | awk -F: '{print $2}')
   fi
   if [[ -n $host && -n $port ]]; then
     ip4=$(getent ahostsv4 "$host" | awk '/STREAM/ {print $1; exit}')
-    [[ -n $ip4 ]] && _run sudo iptables -A pvpnwg-out -o "$LAN_IF" -p udp -d "$ip4" --dport "$port" -j ACCEPT
+    [[ -n $ip4 ]] && _runsudo iptables -A pvpnwg-out -o "$LAN_IF" -p udp -d "$ip4" --dport "$port" -j ACCEPT
   fi
-  _run sudo iptables -P OUTPUT DROP
+  _runsudo iptables -P OUTPUT DROP
   log "Killswitch (iptables) enabled"
 }
 
@@ -1372,20 +1371,18 @@ killswitch_iptables_disable() {
     log "iptables not installed"
     return 1
   }
-  ensure_sudo
-  _run sudo iptables -P OUTPUT ACCEPT
-  _run sudo iptables -D OUTPUT -j pvpnwg-out >/dev/null 2>&1 || true
-  _run sudo iptables -F pvpnwg-out >/dev/null 2>&1 || true
+  _runsudo iptables -P OUTPUT ACCEPT
+  _runsudo iptables -D OUTPUT -j pvpnwg-out >/dev/null 2>&1 || true
+  _runsudo iptables -F pvpnwg-out >/dev/null 2>&1 || true
   log "Killswitch (iptables) disabled"
 }
 
 killswitch_status() {
-  ensure_sudo
-  if command -v nft >/dev/null 2>&1 && _run sudo nft list table inet pvpnwg >/dev/null 2>&1; then
+  if command -v nft >/dev/null 2>&1 && _runsudo nft list table inet pvpnwg >/dev/null 2>&1; then
     echo "nft:enabled"
   elif command -v iptables >/dev/null 2>&1; then
-    if _run sudo iptables -S OUTPUT 2>/dev/null | grep -q "^-P OUTPUT DROP" \
-      && _run sudo iptables -C OUTPUT -o "${IFACE}" -j ACCEPT >/dev/null 2>&1; then
+    if _runsudo iptables -S OUTPUT 2>/dev/null | grep -q "^-P OUTPUT DROP" \
+      && _runsudo iptables -C OUTPUT -o "${IFACE}" -j ACCEPT >/dev/null 2>&1; then
       echo "iptables:enabled"
     else
       echo "iptables:disabled"
@@ -1422,8 +1419,7 @@ cmd_diag() {
       echo "Health: $reason"
       echo
       echo "Raw wg show:"
-      ensure_sudo
-      _run sudo wg show "$IFACE" 2>/dev/null || echo "Interface not found"
+      _runsudo wg show "$IFACE" 2>/dev/null || echo "Interface not found"
       ;;
     pf)
       pf_diag
@@ -1541,9 +1537,8 @@ cmd_disconnect() {
 }
 
 cmd_status() {
-  ensure_sudo
   echo "=== WireGuard ==="
-  _run sudo wg show "$IFACE" || echo "IF $IFACE down"
+  _runsudo wg show "$IFACE" || echo "IF $IFACE down"
   local handshake_age
   handshake_age=$(wg_handshake_age 2>/dev/null || echo "never")
   echo "Handshake age: ${handshake_age}s"
