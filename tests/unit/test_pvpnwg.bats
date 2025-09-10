@@ -236,7 +236,12 @@ EOF
 [Peer]
 AllowedIPs = 0.0.0.0/0, ::/0
 EOF
+    # Run command with real side effects and without sudo stub
+    DRY_RUN=0
+    SUDO_READY=1
+    SUDO_CMD=""
     conf_strip_ipv6_allowedips
+    DRY_RUN=1
     run grep -c '::/0' "$TARGET_CONF"
     [ "$status" -eq 1 ]
 }
