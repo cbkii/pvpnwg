@@ -1090,7 +1090,11 @@ pf_request_once() {
         fi
 
         if [[ -n "$new_port" ]]; then
-          if pf_check_jitter "$new_port" "$prev"; then echo 0 >"$PF_JITTER_FILE" || true; fi
+          if [[ "$new_port" == "$prev" ]]; then
+            echo 0 >"$PF_JITTER_FILE" || true
+          else
+            pf_check_jitter "$new_port" "$prev" || true
+          fi
           if [[ "$new_port" != "$prev" ]]; then
             if qb_set_port "$new_port"; then
               echo "$new_port" >"$PORT_FILE" || true
