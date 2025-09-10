@@ -99,5 +99,11 @@ teardown() {
     [ "$owner" = "testC" ]
     run runuser -u testC -- bash "$SCRIPT" --dry-run status
     [ "$status" -eq 1 ]
-    [[ "$output" == *"Passwordless sudo required."* ]]
+}
+
+@test "direct root execution requires --user" {
+    rm -rf /root/.pvpnwg
+    run bash -c "PVPNWG_NO_MAIN=1 source '$SCRIPT' 2>&1"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Running as root requires --user"* ]]
 }
