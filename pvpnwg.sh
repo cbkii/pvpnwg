@@ -744,7 +744,7 @@ wg_conf_dns() {
 
 conf_strip_ipv6_allowedips() {
   ensure_sudo
-  _run sudo sed -i -E 's/,\s*::\/0//; s/^AllowedIPs\s*=\s*::\/0\s*$//;' "$TARGET_CONF"
+  _run sudo sed -i -E 's/::\/0(, *| *|$)//g; s/(, *)$//; s/^AllowedIPs\s*=\s*$//;' "$TARGET_CONF"
 }
 
 wg_link_state() {
